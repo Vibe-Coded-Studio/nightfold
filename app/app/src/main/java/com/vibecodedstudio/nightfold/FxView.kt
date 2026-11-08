@@ -60,9 +60,9 @@ class FxRenderer(private var cover: Pic, private var inner: Pic) {
     var fx = 0
     var slide = true
     /** The open plays on a timer, not on each ~11 deg hinge step: the cover drains in [coverMs] from the first
-     *  hinge reading, the inner fills in [innerMs] from when the inner panel lights. Defaults come from opens
-     *  measured on a Galaxy Z Fold (first move to panel swap ~229 ms, swap to flat ~130 ms). Closing stays
-     *  angle-driven. */
+     *  hinge reading, the inner fills in [innerMs] from when the inner panel lights. The defaults are slower than a
+     *  real open (measured on a Galaxy Z Fold: first move to panel swap ~229 ms, swap to flat ~130 ms) so the effect
+     *  is easy to see; users tune or train from there. Closing stays angle-driven. */
     var coverMs = DEFAULT_COVER_MS
     var innerMs = DEFAULT_INNER_MS
     /** Finish pass: when the fill reaches 100% the effect runs across once more and leaves the solid screen behind
@@ -220,8 +220,8 @@ class FxRenderer(private var cover: Pic, private var inner: Pic) {
     }
 }
 
-const val DEFAULT_COVER_MS = 230
-const val DEFAULT_INNER_MS = 150
+const val DEFAULT_COVER_MS = 500
+const val DEFAULT_INNER_MS = 1000
 const val DEFAULT_FIN_MS = 900
 const val DEFAULT_SOFT_BLUR = 1.2f
 private const val FADE_MS = 60f
