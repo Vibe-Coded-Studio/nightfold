@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Nightfold icon (his pick 11-08): a half-open Fold as a bat, moon on the left wing. Source: mockup/icon/G.svg -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@mipmap/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>
