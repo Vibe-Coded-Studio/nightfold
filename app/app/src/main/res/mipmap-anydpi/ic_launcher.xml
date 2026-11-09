@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Nightfold icon (his pick 11-08): a half-open Fold as a bat, moon on the left wing. Source: mockup/icon/G.svg -->
+<!-- Nightfold icon (picked 11-08): a half-open Fold as a bat, moon on the left wing. Source: mockup/icon/G.svg -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@mipmap/ic_launcher_background" />
     <foreground android:drawable="@mipmap/ic_launcher_foreground" />
-    <!-- themed icon (his pick B 11-09): outline, spine, moon + stars from the light parts of the foreground -->
+    <!-- themed icon (picked 11-09): outline, spine, moon + stars from the light parts of the foreground -->
     <monochrome android:drawable="@mipmap/ic_launcher_monochrome" />
 </adaptive-icon>

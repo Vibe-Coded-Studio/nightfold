@@ -270,7 +270,7 @@ class MainActivity : Activity() {
         capRow.addView(chip("Capture home screen") {
             val hp = FoldService.helper
             if (hp == null) { capLbl.text = "Needs the helper connected (turn the effect on)"; return@chip }
-            // tell them first (his wording, 11-09): the jump to the home screen looks like the app closed. Shown here,
+            // tell them first (11-09): the jump to the home screen looks like the app closed. Shown here,
             // not as a toast: a toast over the home screen would end up in the picture
             capLbl.text = "Hold on a few seconds, don't close the phone, capturing your home screen"
             capLbl.setTextColor(Color.WHITE)

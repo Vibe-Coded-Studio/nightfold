@@ -31,7 +31,7 @@ home-screen capture so the effect draws your real icons and wallpaper.
 
 ## Setup
 
-1. Download `Nightfold-v0.1.apk` from [Releases](https://github.com/Vibe-Coded-Studio/nightfold/releases), install it and open it. A three-step setup screen walks you through it:
+1. Download the latest `Nightfold-v*.apk` from [Releases](https://github.com/Vibe-Coded-Studio/nightfold/releases), install it and open it. A three-step setup screen walks you through it:
 2. **Get Shizuku**, then **Start Shizuku** (the first time, Shizuku guides you through Wireless debugging).
 3. **Allow**: one tap. The effect turns on.
 

@@ -88,7 +88,7 @@ class FxRenderer(private var cover: Pic, private var inner: Pic) {
         lastNs = nowNs
         val sn = HingeReader.snap(); val ts = sn.ts; val la = sn.a; val pa = sn.pa
         // a small first rise waits for a 2nd, higher reading: a lone stray reading of a closed phone (0 -> 2 deg as
-        // it came out of his pocket, 11-08 19:38, next reading 3.8 s later) started an open nothing could end before
+        // it came out of a pocket, 11-08 19:38, next reading 3.8 s later) started an open nothing could end before
         // the 3 s safety. A real open sends a reading every ~40 ms. A big first jump (opened with the cover off:
         // the first reading can be 28-179 deg) is an open on its own.
         if (pendTs != 0L && nowNs - pendNow > PEND_NS) { log?.invoke("stray hinge reading ignored (${pendAngle} deg, no 2nd)"); pendTs = 0L }

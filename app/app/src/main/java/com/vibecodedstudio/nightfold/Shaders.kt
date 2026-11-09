@@ -229,7 +229,7 @@ float3 leafPal(float h) {
 float wrapd(float a) { return abs(mod(a + 3.14159, 6.28318) - 3.14159); }
 // one leaf in its own frame (l.y down = toward the stem, the tip points up), size R, kind and colours from h.
 // xyz = alpha, r (0 middle .. 1 edge, for the colour), vein. Kinds: 60% five-lobe maple, 20% three-lobe maple,
-// 10% oak, 10% birch (look from his maple reference).
+// 10% oak, 10% birch (look from the maple reference).
 float3 leafShape(float2 l, float R, float h) {
     float typ = fract(h * 4.7);
     float a; float r; float vein = 0.0;

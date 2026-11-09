@@ -10,7 +10,7 @@ import android.content.pm.ServiceInfo
 import android.os.IBinder
 
 /**
- * Keeps the Shizuku helper (HelperService) connected; the helper draws the effect. Shizuku is required (his call
+ * Keeps the Shizuku helper (HelperService) connected; the helper draws the effect. Shizuku is required (decided
  * 11-09): the old app-overlay fallback sat under Samsung's panel-switch layer (home screen flashed ~300 ms), was capped
  * at 80% opacity and redrew every frame forever. Without Shizuku the effect is off and a notification asks for it.
  */
