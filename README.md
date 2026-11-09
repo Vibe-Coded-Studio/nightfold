@@ -20,7 +20,8 @@ the same way again, or out from the middle) and leaves the solid screen behind i
 tune it.
 
 Other settings: cover and inner speed, "Learn my opening" (times a few of your own opens), picture slide on/off, and
-home-screen capture so the effect draws your real icons and wallpaper.
+home-screen capture so the effect draws your real icons and wallpaper ("Capture inner screen" / "Capture outer screen";
+both screens also capture themselves now and then).
 
 ## Requirements
 
@@ -55,7 +56,6 @@ For a signed release build, point `NIGHTFOLD_SIGNING` in `~/.gradle/gradle.prope
 
 - After an app update, Samsung sometimes does not deliver the "app updated" broadcast, so the effect stays off until
   you open Nightfold once.
-- The cover-screen home capture only happens when the cover is unlocked on its home screen.
 
 ## Thanks
 
