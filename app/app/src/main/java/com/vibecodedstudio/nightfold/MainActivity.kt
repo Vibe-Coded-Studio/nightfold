@@ -281,7 +281,9 @@ class MainActivity : Activity() {
                 Thread.sleep(1300)
                 val r = try { hp.captureNow() } catch (e: Throwable) { "failed" }
                 capResult = when (r) { "inner", "cover" -> "Captured the $r screen ✓"; else -> "Not captured: $r" }
-                startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+                // come back through the helper: from here (behind the home screen) Android blocks our own startActivity
+                val back = try { hp.openApp() } catch (e: Throwable) { false }
+                if (!back) startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
             }.start()
         })
         capRow.addView(capLbl, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))

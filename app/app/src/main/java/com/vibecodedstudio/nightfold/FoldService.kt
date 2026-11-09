@@ -15,7 +15,7 @@ import android.os.IBinder
  * at 80% opacity and redrew every frame forever. Without Shizuku the effect is off and a notification asks for it.
  */
 const val SHIZUKU_PKG = "moe.shizuku.privileged.api"
-const val BuildConfigVersion = 33   // bump when HelperService changes: Shizuku restarts the helper
+const val BuildConfigVersion = 35   // bump when HelperService changes: Shizuku restarts the helper
 
 class FoldService : Service() {
     companion object {
@@ -44,6 +44,9 @@ class FoldService : Service() {
         // after a reboot give Shizuku a moment (it may start itself) before asking the user
         handler.postDelayed(checkLater, 15000)
         contentResolver.registerContentObserver(android.provider.Settings.Global.getUriFor(GPU_TEST_KEY), false, gpuTestObs)
+        // the cover's picture is captured on its own a moment after the cover is unlocked (11-09, his ask):
+        // only the app can hear the unlock, the helper does the capture
+        registerReceiver(unlockRx, android.content.IntentFilter(Intent.ACTION_USER_PRESENT))
     }
     // GPU pipeline test (GpuTest), started from adb: 'settings put global nightfold_gputest 1' (only shell can write it)
     private val gpuTestObs = object : android.database.ContentObserver(android.os.Handler(android.os.Looper.getMainLooper())) {
@@ -151,8 +154,13 @@ class FoldService : Service() {
         try { helper?.setFx(savedFx(sp), sp.getBoolean("slide", true)); helper?.setTiming(cm, im); helper?.setFinish(fm, fms); helper?.setSoft(sb, sw) } catch (_: Throwable) {}
     }
 
+    private val unlockRx = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: Context?, i: Intent?) { val hp = helper ?: return; Thread { try { hp.unlocked() } catch (_: Throwable) {} }.start() }
+    }
+
     override fun onDestroy() {
         destroyed = true
+        try { unregisterReceiver(unlockRx) } catch (_: Throwable) {}
         handler.removeCallbacks(checkLater)
         try { rikka.shizuku.Shizuku.removeBinderReceivedListener(shizukuUp); rikka.shizuku.Shizuku.removeBinderDeadListener(shizukuDown) } catch (_: Throwable) {}
         hideStartShizuku()

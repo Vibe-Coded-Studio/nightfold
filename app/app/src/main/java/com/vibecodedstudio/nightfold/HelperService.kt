@@ -249,6 +249,7 @@ class HelperService : IHelper.Stub {
         if (state == 2 && (lastState != 2 || (inner && !lastInner))) onSince = now
         val swappedNow = inner && !lastInner
         val lastInnerBefore = lastInner
+        if (!inner && lastInnerBefore && state == 2) coverSoon("after close")
         if (inner && (!lastInner || (lastState != 2 && state == 2))) { swapAt = now; drawnAt = 0L }
         if (state != 2) offAt = now
         lastState = state; lastInner = inner
@@ -398,6 +399,36 @@ class HelperService : IHelper.Stub {
         p.inputStream.bufferedReader().readText().also { p.waitFor() }
     } catch (e: Throwable) { "" }
 
+    // the Capture button's way back: the app itself is behind the home screen by then and Android blocks it from
+    // starting its own activity ("Background activity launch blocked", 11-09); the shell user is allowed to
+    override fun openApp(): Boolean =
+        sh("am start -n com.vibecodedstudio.nightfold/.MainActivity -f 0x10020000").let { out ->
+            val ok = !out.contains("Error") && !out.contains("Exception")
+            if (!ok) Log.d(TAG, "openApp failed: ${out.trim()}")
+            ok
+        }
+    // ---- the cover's picture on its own (11-09, his ask): a few tries after the cover is unlocked or the phone is closed
+    // onto an unlocked cover. Tries stop once captured, when the screen goes off, the phone opens, or it was captured in
+    // the last 10 min ("recent" costs nothing: it's checked before any shell call). "locked" / "home screen not showing"
+    // try again: unlocking or leaving an app takes a moment.
+    private var coverGen = 0
+    override fun unlocked() { cap.post { coverSoon("after unlock") } }
+    private fun coverSoon(why: String) = cap.post {
+        val gen = ++coverGen
+        for (d in COVER_TRIES_MS) cap.postDelayed({
+            if (gen == coverGen && enabled && ::getInfo.isInitialized) {
+                val info = try { getInfo.invoke(dmg, 0) } catch (_: Throwable) { null }
+                val onCover = info != null && intField(info, "state") == 2 &&
+                    minOf(intField(info, "logicalWidth"), intField(info, "logicalHeight")).toFloat() /
+                    maxOf(intField(info, "logicalWidth"), intField(info, "logicalHeight")) <= 0.7f
+                if (!onCover) coverGen++                       // opened or screen off: stop trying
+                else when (val r = capture(false)) {
+                    "cover", "recent" -> coverGen++
+                    else -> Log.d(TAG, "capture ($why, ${d / 1000.0} s) skipped: $r")
+                }
+            }
+        }, d)
+    }
     override fun captureNow(): String = capture(true).also { if (it != "inner" && it != "cover") Log.d(TAG, "capture (button) skipped: $it") }
     /** automatic capture; logs why it was skipped so a wrong picture can be traced (not "recent": that's the normal case) */
     private fun autoCapture(why: String) {
@@ -490,6 +521,7 @@ class HelperService : IHelper.Stub {
         const val HOLD = 150L
         const val FADE = 120L
         const val MAX_HOLD = 600L
+        val COVER_TRIES_MS = longArrayOf(1500, 4000, 8000, 15000)  // cover capture tries after an unlock / close
         const val CAP_EVERY_MS = 5 * 60_000L     // light check while a screen is on
         const val MIN_LIT = 0.05f              // a capture less lit than this is a black frame, not a home screen
         const val CAP_MIN_GAP_MS = 10 * 60_000L  // automatic captures per screen at most this often
