@@ -21,6 +21,9 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.TextView
 
+@Volatile private var capResult: String? = null       // last button result (kept across the fold/unfold recreate)
+@Volatile private var coverPending = false             // the outer button is waiting on the helper
+private const val COVER_WAIT_MS = 60_000
 private const val TRAIN_OPENS = 8     // median of 8 is steady; odd ones are dropped and replaced (HelperService)
 
 /** Pick the effect, preview it with a slider, switch the effect on/off. */
@@ -265,29 +268,54 @@ class MainActivity : Activity() {
         // the result of a finished training, shown once after the screen rebuilt with the new speed
         sp.getString("trainMsg", null)?.let { trainLbl.text = it; trainLbl.visibility = View.VISIBLE; sp.edit().remove("trainMsg").apply() }
         // ---- home-screen pictures: the effect draws what the screen will show, so keep them current ----
+        // two buttons (11-09, his names): inner = jump to the home screen, capture, come back; outer = close the phone,
+        // unlock the cover, the helper captures it and brings Nightfold back on the cover. Both end back in the app
+        // with the result, so it's clear it's done.
         val capRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(6), 0, 0) }
-        capLbl = TextView(this).apply { setTextColor(MUTED); textSize = 12f; setPadding(dp(8), 0, 0, 0); maxLines = 2 }
-        capRow.addView(chip("Capture home screen") {
-            val hp = FoldService.helper
-            if (hp == null) { capLbl.text = "Needs the helper connected (turn the effect on)"; return@chip }
-            // tell them first (11-09): the jump to the home screen looks like the app closed. Shown here,
-            // not as a toast: a toast over the home screen would end up in the picture
-            capLbl.text = "Hold on a few seconds, don't close the phone, capturing your home screen"
-            capLbl.setTextColor(Color.WHITE)
+        capLbl = TextView(this).apply { setTextColor(MUTED); textSize = 12f; setPadding(dp(2), dp(4), 0, 0); maxLines = 2 }
+        fun busy(t: String) { capLbl.text = t; capLbl.setTextColor(Color.WHITE) }
+        // this screen's home screen: show it, capture it, come back (the helper reopens the app: Android blocks the
+        // app's own start from behind the home screen)
+        fun captureHere(hp: IHelper) {
+            busy("Hold on a few seconds, don't close the phone, capturing your home screen")
             Thread {
                 Thread.sleep(1500)
-                // show the home screen, capture it, come back
                 startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 Thread.sleep(1300)
                 val r = try { hp.captureNow() } catch (e: Throwable) { "failed" }
                 capResult = when (r) { "inner", "cover" -> "Captured the $r screen ✓"; else -> "Not captured: $r" }
-                // come back through the helper: from here (behind the home screen) Android blocks our own startActivity
                 val back = try { hp.openApp() } catch (e: Throwable) { false }
                 if (!back) startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
             }.start()
+        }
+        capRow.addView(chip("Capture inner screen") {
+            val hp = FoldService.helper
+            if (hp == null) { capLbl.text = "Needs the helper connected (turn the effect on)"; return@chip }
+            if (narrow) { busy("Open your phone, then press Capture inner screen"); return@chip }
+            captureHere(hp)
+        }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = dp(8) })
+        capRow.addView(chip("Capture outer screen") {
+            val hp = FoldService.helper
+            if (hp == null) { capLbl.text = "Needs the helper connected (turn the effect on)"; return@chip }
+            if (narrow) { captureHere(hp); return@chip }    // already on the cover: same as the inner button
+            // open: switch to the cover for a moment by itself; a phone that won't switch falls back to "close it"
+            busy("Hold on a few seconds, switching to the outer screen to capture it")
+            Thread {
+                Thread.sleep(1500)
+                val r = try { hp.captureCoverSwitch() } catch (e: Throwable) { "failed" }
+                if (r == "no switch") {
+                    try { hp.captureCover(COVER_WAIT_MS); coverPending = true; capResult = null } catch (e: Throwable) { capResult = "Not captured: helper error" }
+                    runOnUiThread { if (coverPending) busy("Close your phone and unlock the outer screen, Nightfold comes back when it's captured") else showCaptures() }
+                    return@Thread
+                }
+                capResult = if (r == "cover") "Captured the outer screen ✓" else "Not captured: $r"
+                val back = try { hp.openApp() } catch (e: Throwable) { false }
+                if (!back) startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+                runOnUiThread { showCaptures() }
+            }.start()
         })
-        capRow.addView(capLbl, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         sc.addView(capRow)
+        sc.addView(capLbl)
         showCaptures()
         val top = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(14) }
         if (narrow) {
@@ -455,7 +483,6 @@ class MainActivity : Activity() {
     }
 
     private lateinit var capLbl: TextView
-    @Volatile private var capResult: String? = null
     /** when each screen's picture was last captured (automatic or the button) */
     private fun showCaptures() {
         if (!::capLbl.isInitialized) return
@@ -466,10 +493,39 @@ class MainActivity : Activity() {
         capLbl.text = head + "inner ${t("inner.png")} · cover ${t("cover.png")}"
     }
 
+    // the "inner … · cover …" line follows new pictures live (11-09, his ask): the helper saves them from its own process
+    // (the cover one after an unlock), so look at the two files' times every 2 s while this screen is showing (two
+    // stat calls, nothing runs once the app is in the background)
+    /** the outer button's request: ask the helper how it went (while waiting, on every check below) */
+    private fun pollCover() {
+        if (!coverPending) return
+        val r = try { FoldService.helper?.coverResult() } catch (_: Throwable) { null } ?: return
+        when (r) {
+            "waiting" -> { if (::capLbl.isInitialized) { capLbl.text = "Close your phone and unlock the outer screen, Nightfold comes back when it's captured"; capLbl.setTextColor(Color.WHITE) }; return }
+            "idle" -> {}
+            "cover" -> capResult = "Captured the outer screen ✓"
+            "cancelled" -> capResult = "Outer screen capture cancelled (phone wasn't closed in time)"
+            else -> capResult = "Not captured: $r"
+        }
+        coverPending = false; showCaptures()
+    }
+    private var capSeen = ""
+    private fun capStamp(): String { val d = getExternalFilesDir(null); return "${java.io.File(d, "inner.png").lastModified()}/${java.io.File(d, "cover.png").lastModified()}" }
+    private val capWatch = object : Runnable {
+        override fun run() {
+            val now = capStamp()
+            if (now != capSeen) { capSeen = now; showCaptures(); if (::preview.isInitialized) preview.reloadPics() }
+            pollCover()
+            ui.postDelayed(this, 2000)
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         if (::preview.isInitialized) preview.reloadPics()
         showCaptures()
+        pollCover()
+        capSeen = capStamp(); ui.removeCallbacks(capWatch); ui.postDelayed(capWatch, 2000)
         // the effect should be on but is not running (e.g. the restore broadcast after an update was killed because the
         // app was opened at the same moment): opening the app brings it back, same as RestoreReceiver
         if (getSharedPreferences("fx", MODE_PRIVATE).getBoolean("enabled", false) && !FoldService.running) restartService(force = true)
@@ -493,6 +549,7 @@ class MainActivity : Activity() {
     override fun onStop() {
         FoldService.onRunningChanged = null
         ui.removeCallbacks(trainPoll)
+        ui.removeCallbacks(capWatch)
         try {
             rikka.shizuku.Shizuku.removeRequestPermissionResultListener(permListener)
             rikka.shizuku.Shizuku.removeBinderReceivedListener(binderUp); rikka.shizuku.Shizuku.removeBinderDeadListener(binderDown)

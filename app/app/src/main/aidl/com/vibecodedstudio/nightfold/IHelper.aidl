@@ -20,5 +20,11 @@ interface IHelper {
                                                     // behind the home screen may not start itself: Android blocks it)
     void unlocked() = 16;                           // the phone was just unlocked (app hears USER_PRESENT): capture the
                                                     // cover's home screen soon if the cover is the screen in use
+    void captureCover(int timeoutMs) = 17;          // the "Capture outer screen" button: wait for the cover to be unlocked
+                                                    // on its home screen, capture it, bring Nightfold back
+    String coverResult() = 18;                      // "idle" | "waiting" | "cover" | "cancelled" | why not (read clears it)
+    String captureCoverSwitch() = 19;               // phone open: switch to the cover for a moment (device_state CLOSED),
+                                                    // capture its home screen, switch back ("cover" or why not; "no switch"
+                                                    // = this phone wouldn't switch, use captureCover instead)
     void destroy() = 16777114;                      // Shizuku's reserved "destroy" transaction
 }

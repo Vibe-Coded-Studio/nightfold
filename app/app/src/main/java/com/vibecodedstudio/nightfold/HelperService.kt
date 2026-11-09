@@ -429,6 +429,80 @@ class HelperService : IHelper.Stub {
             }
         }, d)
     }
+    // ---- "Capture outer screen" button (11-09, his ask): the app asks while open; the person closes the phone and
+    // unlocks the cover; once the cover's home screen has shown for a moment it's captured and Nightfold comes back
+    // (on the cover) so they see it's done. Checked every 0.7 s on the capture thread, only while a request is waiting.
+    @Volatile private var coverJob = "idle"
+    private var coverDeadline = 0L; private var coverHomeSent = false; private var coverReadyAt = 0L
+    override fun captureCover(timeoutMs: Int) { cap.post {
+        coverJob = "waiting"; coverDeadline = SystemClock.uptimeMillis() + timeoutMs; coverHomeSent = false; coverReadyAt = 0L
+        coverGen++                                          // the automatic tries step aside while the button's wait runs
+        cap.removeCallbacks(coverStep); cap.post(coverStep)
+    } }
+    override fun coverResult(): String = coverJob.also { if (it != "waiting") coverJob = "idle" }
+    private val coverStep = object : Runnable {
+        override fun run() {
+            if (coverJob != "waiting") return
+            val now = SystemClock.uptimeMillis()
+            if (now > coverDeadline) { coverJob = "cancelled"; Log.d(TAG, "capture (outer button) cancelled: no cover in time"); return }
+            val info = try { getInfo.invoke(dmg, 0) } catch (_: Throwable) { null }
+            val onCover = info != null && intField(info, "state") == 2 &&
+                minOf(intField(info, "logicalWidth"), intField(info, "logicalHeight")).toFloat() /
+                maxOf(intField(info, "logicalWidth"), intField(info, "logicalHeight")) <= 0.7f
+            if (!onCover) { coverReadyAt = 0L; cap.postDelayed(this, 700); return }
+            val win = sh("dumpsys window | grep -E 'mCurrentFocus|isKeyguardShowing'")
+            if (win.contains("isKeyguardShowing=true")) { coverReadyAt = 0L; cap.postDelayed(this, 700); return }
+            // unlocked on the cover: give the unlock animation a moment to finish before the picture
+            if (coverReadyAt == 0L) { coverReadyAt = now; cap.postDelayed(this, 900); return }
+            when (val r = capture(true)) {
+                "cover" -> { coverJob = "cover"; Log.d(TAG, "capture (outer button) done"); openApp() }
+                // an app on the cover (Samsung can carry Nightfold itself over when the phone closes): show the home
+                // screen once, then try again
+                "home screen not showing" -> {
+                    if (!coverHomeSent) { coverHomeSent = true; sh("am start -a android.intent.action.MAIN -c android.intent.category.HOME") }
+                    cap.postDelayed(this, 1300)
+                }
+                "locked", "screen off", "effect showing", "black frame", "inner" -> cap.postDelayed(this, 700)
+                else -> { coverJob = r; Log.d(TAG, "capture (outer button) failed: $r"); openApp() }
+            }
+        }
+    }
+    // ---- "Capture outer screen" with the phone open (11-09, his ask; tried by hand first: the cover comes up UNLOCKED
+    // with the front app carried over, and reset brings the inner back unlocked): ask Android to act closed, show the
+    // cover's home screen, capture, then hand the fold state back. The reset is always sent, whatever happens.
+    private fun panelNow(): Pair<Boolean, Int>? {      // (inner?, state) of the lit panel right now
+        val info = try { getInfo.invoke(dmg, 0) } catch (_: Throwable) { null } ?: return null
+        val w = intField(info, "logicalWidth"); val h = intField(info, "logicalHeight")
+        return Pair(minOf(w, h).toFloat() / maxOf(w, h) > 0.7f, intField(info, "state"))
+    }
+    private fun waitPanel(inner: Boolean, ms: Long): Boolean {
+        val end = SystemClock.uptimeMillis() + ms
+        while (SystemClock.uptimeMillis() < end) { val p = panelNow(); if (p != null && p.first == inner && p.second == 2) return true; Thread.sleep(100) }
+        return false
+    }
+    override fun captureCoverSwitch(): String {
+        val p = panelNow() ?: return "no display info"
+        if (!p.first) return "already on the cover"
+        try {
+            sh("cmd device_state state 0")
+            if (!waitPanel(false, 3000)) return "no switch"
+            // "go home" sent while the panels are still swapping can be dropped (11-09: first try said "home screen not
+            // showing", the same steps by hand a second later worked), so send it again until the cover shows home
+            var r = "home screen not showing"
+            for (attempt in 1..4) {
+                Thread.sleep(if (attempt == 1) 700 else 300)
+                sh("am start -a android.intent.action.MAIN -c android.intent.category.HOME")
+                Thread.sleep(1000)
+                r = capture(true)
+                if (r != "home screen not showing" && r != "black frame") break
+            }
+            Log.d(TAG, "capture (outer button, switch) $r")
+            return r
+        } finally {
+            sh("cmd device_state state reset")
+            waitPanel(true, 3000)
+        }
+    }
     override fun captureNow(): String = capture(true).also { if (it != "inner" && it != "cover") Log.d(TAG, "capture (button) skipped: $it") }
     /** automatic capture; logs why it was skipped so a wrong picture can be traced (not "recent": that's the normal case) */
     private fun autoCapture(why: String) {

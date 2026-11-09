@@ -15,7 +15,7 @@ import android.os.IBinder
  * at 80% opacity and redrew every frame forever. Without Shizuku the effect is off and a notification asks for it.
  */
 const val SHIZUKU_PKG = "moe.shizuku.privileged.api"
-const val BuildConfigVersion = 35   // bump when HelperService changes: Shizuku restarts the helper
+const val BuildConfigVersion = 38   // bump when HelperService changes: Shizuku restarts the helper
 
 class FoldService : Service() {
     companion object {
