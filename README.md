@@ -25,9 +25,9 @@ home-screen capture so the effect draws your real icons and wallpaper.
 ## Requirements
 
 - A Samsung Galaxy Z Fold, Android 14 or newer. Built and tested on a Z Fold (SM-F971U, Android 17). Other foldables
-  get a simpler fallback that uses Android's public hinge sensor (untested).
-- [Shizuku](https://github.com/RikkaApps/Shizuku) (free). It lets Nightfold read the fine hinge angle and draw above
-  the system's panel switch. Without it the app falls back to a basic overlay.
+  use Android's public hinge sensor instead (coarser, untested).
+- [Shizuku](https://github.com/RikkaApps/Shizuku) (free), required. It lets Nightfold read the fine hinge angle and
+  draw above the system's panel switch. Without it the effect stays off and a notification asks you to start it.
 
 ## Setup
 

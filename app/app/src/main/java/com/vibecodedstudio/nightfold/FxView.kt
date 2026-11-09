@@ -86,7 +86,7 @@ class FxRenderer(private var cover: Pic, private var inner: Pic) {
         val nowNs = SystemClock.elapsedRealtimeNanos()
         val dt = if (lastNs == 0L) 0f else ((nowNs - lastNs) / 1e9f).coerceIn(0f, 0.1f)
         lastNs = nowNs
-        val ts = HingeReader.lastTsNs; val la = HingeReader.lastAngle; val pa = HingeReader.prevAngle
+        val sn = HingeReader.snap(); val ts = sn.ts; val la = sn.a; val pa = sn.pa
         // a small first rise waits for a 2nd, higher reading: a lone stray reading of a closed phone (0 -> 2 deg as
         // it came out of his pocket, 11-08 19:38, next reading 3.8 s later) started an open nothing could end before
         // the 3 s safety. A real open sends a reading every ~40 ms. A big first jump (opened with the cover off:
@@ -266,11 +266,11 @@ internal fun ss(a: Float, b: Float, x: Float): Float {
 }
 
 /**
- * Hosts the effect in a View. In the app's preview it follows a slider / scripted play; as the overlay (fallback
- * when the Shizuku helper is not rendering) it follows the real hinge.
- * Which screen it is on is told by its shape: the inner screen is nearly square, the cover is tall and thin.
+ * The app's preview of the effect: follows a slider drag or a scripted play. (The live effect is drawn only by the
+ * Shizuku helper; the old app-overlay fallback was removed 11-09.)
+ * Which screen it shows is previewInner: the inner screen is nearly square, the cover tall and thin.
  */
-class FxView(ctx: Context, private val preview: Boolean) : View(ctx) {
+class FxView(ctx: Context) : View(ctx) {
     var fx: Int get() = r.fx; set(v) { r.fx = v }
     var slide: Boolean get() = r.slide; set(v) { r.slide = v }
     fun timing(coverMs: Int, innerMs: Int) { r.coverMs = coverMs; r.innerMs = innerMs }
@@ -278,9 +278,9 @@ class FxView(ctx: Context, private val preview: Boolean) : View(ctx) {
     fun finish(mode: Int, ms: Int, blur: Float, wobble: Float) { r.finMode = mode; r.finMs = ms; r.softBlur = blur; r.softWobble = wobble }
     private var previewFin = -1f
     private var previewProg = -1f
-    var manualAngle = 0f            // preview only
-    var previewInner = true         // preview only
-    var playStart = -1L             // preview: playing a scripted open + close since this time
+    var manualAngle = 0f
+    var previewInner = true
+    var playStart = -1L             // playing a scripted open + close since this time
     var slowMo = false
     var onPreviewAngle: ((Float) -> Unit)? = null
 
@@ -314,67 +314,27 @@ class FxView(ctx: Context, private val preview: Boolean) : View(ctx) {
         }
         return a
     }
-    var active = false; private set
-    var onActiveChanged: ((Boolean) -> Unit)? = null
-
-    /** Screen off: cover the screen already, so a waking inner panel never shows the bare picture first.
-     *  Screen on: stay armed a moment (an open is starting) then fall back to normal. */
-    @Volatile var armedUntil = 0L
-    fun armForever() { armedUntil = Long.MAX_VALUE; postInvalidate() }
-    fun armFor(ms: Long) { armedUntil = SystemClock.uptimeMillis() + ms; postInvalidate() }
-    /** overlay: the display is bigger than the window (a panel bigger than any seen before): the service grows it */
-    var onTooSmall: ((Int) -> Unit)? = null
-
     private val r = FxRenderer(Pic.load(ctx, "cover.png", 624, 986, 210), Pic.load(ctx, "inner.png", 1224, 924, 20))
-        .apply { if (!preview) log = { android.util.Log.d("FoldDuoT", it) } }
-    private val smoother = HingeSmoother()
-
-    /** What we draw into: the view in the preview; the current display in the overlay (the window is a fixed
-     *  2448x2448 so it never resizes at the cover-to-inner swap). */
-    private var dw = 0; private var dh = 0
-    private fun updateArea() {
-        if (preview) { dw = width; dh = height; return }
-        val b = context.getSystemService(android.view.WindowManager::class.java).currentWindowMetrics.bounds
-        if (b.width() > width || b.height() > height) onTooSmall?.invoke(max(b.width(), b.height()))
-        dw = min(b.width(), width); dh = min(b.height(), height)
-    }
-
-    private fun isInnerShape(): Boolean = if (preview) previewInner else {
-        val q = max(dw, dh).toFloat() / max(1, min(dw, dh))
-        q < 1.45f
-    }
-
-    override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
-        if (!preview) android.util.Log.d("FoldDuoT", "size ${ow}x$oh -> ${w}x$h")
-    }
 
     override fun onDraw(canvas: Canvas) {
-        updateArea()
-        if (dw == 0 || dh == 0) return
-        val sa = if (preview) scripted(SystemClock.uptimeMillis()) else null
+        if (width == 0 || height == 0) return
+        val sa = scripted(SystemClock.uptimeMillis())
         if (sa != null) { manualAngle = sa; onPreviewAngle?.invoke(sa) }
-        val innerShape = isInnerShape()
-        val a = if (preview) manualAngle else smoother.tick()
-        val armedNow = armedUntil == Long.MAX_VALUE || SystemClock.uptimeMillis() < armedUntil
-        if (preview && playStart < 0) previewFin = -1f
-        val show = r.draw(canvas, dw, dh, innerShape, a, armedNow, preview,
-            previewFin = if (preview) previewFin else -1f, previewProg = if (preview) previewProg else -1f)
-        if (show != active) { active = show; onActiveChanged?.invoke(show) }
-        if (!preview && show && innerShape) { try { FoldService.helper?.innerDrawn() } catch (_: Throwable) {} }
+        if (playStart < 0) previewFin = -1f
+        r.draw(canvas, width, height, previewInner, manualAngle, false, preview = true,
+            previewFin = previewFin, previewProg = previewProg)
     }
 
-    // Frame loop on the Choreographer, not on the draw itself: a draw skipped while the screen is off must not
-    // end the loop, or the cover freezes after waking. A slow watchdog kicks it too.
+    // redraw every frame while the preview is on screen (the effects animate even when held still)
     private val frameCb = object : android.view.Choreographer.FrameCallback {
         override fun doFrame(t: Long) { invalidate(); android.view.Choreographer.getInstance().postFrameCallback(this) }
     }
-    private val kick = object : Runnable { override fun run() { invalidate(); postDelayed(this, 100) } }
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        android.view.Choreographer.getInstance().postFrameCallback(frameCb); post(kick)
+        android.view.Choreographer.getInstance().postFrameCallback(frameCb)
     }
     override fun onDetachedFromWindow() {
-        android.view.Choreographer.getInstance().removeFrameCallback(frameCb); removeCallbacks(kick)
+        android.view.Choreographer.getInstance().removeFrameCallback(frameCb)
         super.onDetachedFromWindow()
     }
 }

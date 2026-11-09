@@ -9,8 +9,8 @@ import kotlin.math.min
 /**
  * Hinge angle from Samsung's sensors-hal log (measured on a Galaxy Z Fold: ~11 deg steps every 40 ms on a normal
  * open). Read only in the Shizuku helper, which runs as the shell user and so gets no log-access prompt. The app
- * process never runs logcat (Android 13+ asks "allow access to all device logs?" each time an app does); its
- * fallback feeds this from Android's public hinge sensor instead (AppHinge, coarse: ~0/90/180).
+ * process never runs logcat (Android 13+ asks "allow access to all device logs?" each time an app does). Phones without
+ * Samsung's log get Android's public hinge sensor from the app instead (AppHinge -> hingeFromApp, coarse: ~0/90/180).
  */
 object HingeReader {
     private const val TAG = "FoldDuoHinge"
@@ -31,13 +31,18 @@ object HingeReader {
 
     private var thread: Thread? = null
 
+    /** All four values from the same reading (the reader thread can feed between separate field reads). */
+    class Snap(val ts: Long, val a: Float, val pts: Long, val pa: Float)
+    @Synchronized fun snap() = Snap(lastTsNs, lastAngle, prevTsNs, prevAngle)
+
     fun start() {
         if (thread?.isAlive == true) return
         running = true
         thread = Thread({
             while (running) {
+                var p: Process? = null
                 try {
-                    val p = ProcessBuilder("logcat", "-v", "raw", "-T", "1", "-s", "sensors-hal:I").redirectErrorStream(true).start()
+                    p = ProcessBuilder("logcat", "-v", "raw", "-T", "1", "-s", "sensors-hal:I").redirectErrorStream(true).start()
                     p.inputStream.bufferedReader().useLines { lines ->
                         for (l in lines) {
                             if (!running) break
@@ -51,10 +56,9 @@ object HingeReader {
                             Log.d("FoldDuoT", "reading $a deg, late ${(SystemClock.elapsedRealtimeNanos() - ts) / 1_000_000} ms")
                         }
                     }
-                    p.destroy()
                 } catch (e: Exception) {
                     Log.w(TAG, "logcat reader: $e")
-                }
+                } finally { p?.destroy() }      // never leave a logcat process behind
                 if (running) Thread.sleep(1000)
             }
         }, "hinge-reader").apply { isDaemon = true; start() }
@@ -71,7 +75,8 @@ object HingeReader {
     }
 }
 
-/** App-process fallback (no Shizuku): Android's public hinge sensor. No permission, no popup; coarse steps. */
+/** Android's public hinge sensor in the app process, forwarded to the helper on phones without Samsung's hinge log.
+ *  No permission, no popup; coarse steps. */
 object AppHinge : android.hardware.SensorEventListener {
     private var sm: android.hardware.SensorManager? = null
     fun start(c: android.content.Context) {
@@ -85,7 +90,6 @@ object AppHinge : android.hardware.SensorEventListener {
      *  false once the helper has its own finer feed, and the app then stops listening. */
     @Volatile var forward: ((Float, Long) -> Boolean)? = null
     override fun onSensorChanged(e: android.hardware.SensorEvent) {
-        HingeReader.feed(e.values[0], e.timestamp)
         val f = forward ?: return
         if (!f(e.values[0], e.timestamp)) stop()
     }
@@ -105,14 +109,14 @@ class HingeSmoother {
         val now = SystemClock.elapsedRealtimeNanos()
         val dt = if (lastFrameNs == 0L) 0.016f else ((now - lastFrameNs) / 1e9f).coerceIn(0.001f, 0.1f)
         lastFrameNs = now
-        val ts = HingeReader.lastTsNs
-        val a = HingeReader.lastAngle
+        val sn = HingeReader.snap()
+        val ts = sn.ts; val a = sn.a
         if (a < 0f) return angle
         if (angle < 0f) angle = a
         if (ts != usedTs) {
             usedTs = ts
-            val pts = HingeReader.prevTsNs
-            vel = if (pts > 0 && ts - pts < 700_000_000L) (a - HingeReader.prevAngle) / ((ts - pts) / 1e9f) else 0f
+            val pts = sn.pts
+            vel = if (pts > 0 && ts - pts < 700_000_000L) (a - sn.pa) / ((ts - pts) / 1e9f) else 0f
         }
         val since = max(0f, (now - ts) / 1e9f)
         var target = a

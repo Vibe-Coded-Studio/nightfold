@@ -21,7 +21,9 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.TextView
 
-/** Pick the effect, preview it with a slider, switch the live overlay on/off. */
+private const val TRAIN_OPENS = 8     // median of 8 is steady; odd ones are dropped and replaced (HelperService)
+
+/** Pick the effect, preview it with a slider, switch the effect on/off. */
 class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var preview: FxView
@@ -137,7 +139,7 @@ class MainActivity : Activity() {
         val card = FrameLayout(this).apply {
             background = round(Color.BLACK, 18); clipToOutline = true
         }
-        preview = FxView(this, preview = true).apply {
+        preview = FxView(this).apply {
             fx = savedFx(sp); this.slide = sp.getBoolean("slide", true); manualAngle = 120f
         }
         previewFinish()
@@ -230,17 +232,22 @@ class MainActivity : Activity() {
         speedSlider("Blur", "softBlur", (DEFAULT_SOFT_BLUR * 10).toInt(), 0, 30, into = cols2, step = 1,
             fmt = { if (it == 0) "off" else "%.1f".format(it / 10f) })
         speedSlider("Wobble", "softWobble", 0, 0, 10, into = cols2, step = 1, fmt = { if (it == 0) "off" else "$it" })
-        val trainLbl = TextView(this).apply { setTextColor(Color.rgb(170, 220, 170)); textSize = 13f; visibility = View.GONE }
+        trainLbl = TextView(this).apply { setTextColor(Color.rgb(170, 220, 170)); textSize = 13f; visibility = View.GONE }
         val chips = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(6), 0, 0) }
-        // training: learn this user's own opening speed
+        // training: learn this user's own opening speed (HelperService.trainStep)
         chips.addView(chip("Learn my opening") {
             trainLbl.visibility = View.VISIBLE
             val hp = FoldService.helper
             if (hp == null) { trainLbl.text = "Needs the Shizuku helper connected first (turn the effect on)"; return@chip }
-            hp.startTraining(8)
-            trainLbl.text = "Training: close the phone, wake the cover screen, then open fully and close again. 0/8"
-            pollTraining(trainLbl)
+            hp.startTraining(TRAIN_OPENS)
+            trainCancel.visibility = View.VISIBLE
+            pollTraining()
         }, gap())
+        trainCancel = chip("Cancel") {
+            try { FoldService.helper?.startTraining(0) } catch (_: Throwable) {}
+            ui.removeCallbacks(trainPoll); trainCancel.visibility = View.GONE
+            trainLbl.text = "Training cancelled, nothing changed"
+        }.apply { visibility = View.GONE }
         fun slideText(on: Boolean) = if (on) "Picture slides  ✓" else "Picture slides  ✕"
         chips.addView(chip(slideText(sp.getBoolean("slide", true))) { c ->
             val on = !sp.getBoolean("slide", true)
@@ -251,17 +258,26 @@ class MainActivity : Activity() {
             FxSettings.reset(sp, curFx()); mark(curFx()); fxRefresh.forEach { it() }; previewFinish(); restartService()
         }, gap())
         sc.addView(chips)
-        sc.addView(trainLbl)
+        sc.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(4), 0, 0)
+            addView(trainLbl, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)); addView(trainCancel)
+        })
+        // the result of a finished training, shown once after the screen rebuilt with the new speed
+        sp.getString("trainMsg", null)?.let { trainLbl.text = it; trainLbl.visibility = View.VISIBLE; sp.edit().remove("trainMsg").apply() }
         // ---- home-screen pictures: the effect draws what the screen will show, so keep them current ----
         val capRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(6), 0, 0) }
         capLbl = TextView(this).apply { setTextColor(MUTED); textSize = 12f; setPadding(dp(8), 0, 0, 0); maxLines = 2 }
         capRow.addView(chip("Capture home screen") {
             val hp = FoldService.helper
             if (hp == null) { capLbl.text = "Needs the helper connected (turn the effect on)"; return@chip }
-            capLbl.text = "Capturing…"
-            // show the home screen, capture it, come back
-            startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            // tell them first (his wording, 11-09): the jump to the home screen looks like the app closed. Shown here,
+            // not as a toast: a toast over the home screen would end up in the picture
+            capLbl.text = "Hold on a few seconds, don't close the phone, capturing your home screen"
+            capLbl.setTextColor(Color.WHITE)
             Thread {
+                Thread.sleep(1500)
+                // show the home screen, capture it, come back
+                startActivity(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 Thread.sleep(1300)
                 val r = try { hp.captureNow() } catch (e: Throwable) { "failed" }
                 capResult = when (r) { "inner", "cover" -> "Captured the $r screen ✓"; else -> "Not captured: $r" }
@@ -413,17 +429,27 @@ class MainActivity : Activity() {
         stopService(Intent(this, FoldService::class.java)); refresh() }
 
     private val ui = android.os.Handler(android.os.Looper.getMainLooper())
-    private fun pollTraining(lbl: TextView) {
-        val r = try { FoldService.helper?.training() } catch (_: Throwable) { null } ?: return
+    private lateinit var trainLbl: TextView
+    private lateinit var trainCancel: TextView
+    private val trainPoll = Runnable { pollTraining() }
+    /** follows a training run in the helper; stops while the app is not on screen (onStop) and picks up again in
+     *  onStart, since the run itself (closing + opening the phone) happens with the app in the background */
+    private fun pollTraining() {
+        ui.removeCallbacks(trainPoll)
+        val r = try { FoldService.helper?.training() } catch (_: Throwable) { null }
+        if (r == null || r == "idle" || r == "cancelled") { trainCancel.visibility = View.GONE; return }
         if (r.startsWith("done")) {
             val c = r.split(" ")[1].toInt()
             getSharedPreferences("fx", Context.MODE_PRIVATE).edit()
-                .putInt("trained_coverMs", c).putInt("coverMs", c).remove("trained_innerMs").apply()
+                .putInt("trained_coverMs", c).putInt("coverMs", c).remove("trained_innerMs")
+                .putString("trainMsg", "Learned ✓  your opens take about $c ms, cover speed set to $c ms").apply()
+            try { FoldService.helper?.startTraining(0) } catch (_: Throwable) {}   // back to idle so it is not applied twice
             restartService(); recreate()
             return
         }
-        lbl.text = "Training: wake the cover screen, open fully, close. Repeat. $r"
-        ui.postDelayed({ pollTraining(lbl) }, 400)
+        trainLbl.visibility = View.VISIBLE; trainCancel.visibility = View.VISIBLE
+        trainLbl.text = "Training: close the phone, wake the cover screen, then open fully. ${r.replace("/", " of ")} done"
+        ui.postDelayed(trainPoll, 400)
     }
 
     private lateinit var capLbl: TextView
@@ -433,6 +459,7 @@ class MainActivity : Activity() {
         if (!::capLbl.isInitialized) return
         val dir = getExternalFilesDir(null)
         fun t(n: String): String { val f = java.io.File(dir, n); return if (f.exists()) android.text.format.DateFormat.format("MMM d HH:mm", f.lastModified()).toString() else "none" }
+        capLbl.setTextColor(MUTED)
         val head = capResult?.let { "$it  ·  " } ?: ""
         capLbl.text = head + "inner ${t("inner.png")} · cover ${t("cover.png")}"
     }
@@ -455,6 +482,7 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         FoldService.onRunningChanged = { refresh() }
+        if (::trainLbl.isInitialized) pollTraining()        // a training run still going: show it again
         try {
             rikka.shizuku.Shizuku.addRequestPermissionResultListener(permListener)
             rikka.shizuku.Shizuku.addBinderReceivedListenerSticky(binderUp); rikka.shizuku.Shizuku.addBinderDeadListener(binderDown)
@@ -462,6 +490,7 @@ class MainActivity : Activity() {
     }
     override fun onStop() {
         FoldService.onRunningChanged = null
+        ui.removeCallbacks(trainPoll)
         try {
             rikka.shizuku.Shizuku.removeRequestPermissionResultListener(permListener)
             rikka.shizuku.Shizuku.removeBinderReceivedListener(binderUp); rikka.shizuku.Shizuku.removeBinderDeadListener(binderDown)

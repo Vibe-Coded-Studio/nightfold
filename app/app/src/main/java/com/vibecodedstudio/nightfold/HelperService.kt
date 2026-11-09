@@ -25,7 +25,7 @@ import kotlin.system.exitProcess
  *  - the hinge is read here directly (the shell user can read logcat without a consent prompt)
  *  - pictures are read from the app's files dir on /sdcard
  * Under it, a black colour layer covers the panel switch until the first inner frame is on screen.
- * Fail-open: if this process dies SurfaceFlinger removes both layers, and the app falls back to its own overlay.
+ * Fail-open: if this process dies SurfaceFlinger removes both layers and the effect is simply off (no app fallback).
  */
 class HelperService : IHelper.Stub {
     constructor() : super() { start() }
@@ -64,37 +64,59 @@ class HelperService : IHelper.Stub {
     private val trainCover = mutableListOf<Float>()
     @Volatile private var trainResult = "idle"
     private var tUsedTs = 0L; private var tStartNs = 0L; private var tSwapNs = 0L; private var tCoverOn = false
+    private var tFirstTs = 0L; private var tFirstLa = 0f; private var tConfirmed = false
+    private var tNote = ""
+    private var tTimed = 0                  // opens timed in this run, kept or not (TRAIN_MAX)
 
     private fun trainStep(innerNow: Boolean, swappedNow: Boolean) {
         if (trainWant <= 0) return
         val nowNs = SystemClock.elapsedRealtimeNanos()
         if (swappedNow && tStartNs > 0 && tSwapNs == 0L) tSwapNs = nowNs
-        val ts = HingeReader.lastTsNs; val la = HingeReader.lastAngle; val pa = HingeReader.prevAngle
+        val sn = HingeReader.snap(); val ts = sn.ts; val la = sn.a; val pa = sn.pa
         if (ts == tUsedTs || pa < 0f) return
         tUsedTs = ts
-        if (pa <= 12f && la > pa) {                       // an open starts (same rule as the effect clock)
+        // same open-start rule as the effect (FxRenderer.clock): a small first rise (< 15 deg) only counts once a 2nd,
+        // higher reading follows within 300 ms; a lone stray reading (phone out of a pocket) is not an open
+        if (tStartNs != 0L && !tConfirmed) {
+            if (la > tFirstLa && ts - tFirstTs < TRAIN_PEND_NS) tConfirmed = true
+            else tStartNs = 0L                               // stray: drop it, this reading may start a real open below
+        }
+        if (tStartNs == 0L && pa <= 20f && la > pa) {
             tStartNs = ts - 40_000_000L; tSwapNs = 0L
+            tFirstTs = ts; tFirstLa = la; tConfirmed = la >= 15f
             tCoverOn = !innerNow && curState == 2           // only cover-ON opens have a cover stage to time
             return
         }
-        if (tStartNs == 0L) return
+        if (tStartNs == 0L || !tConfirmed) return
         if (la < pa - 8f || ts - tStartNs > 1_500_000_000L) { tStartNs = 0L; return }   // closed again / too slow
         if (la >= 165f) {
-            if (tCoverOn && tSwapNs > tStartNs) {
-                trainCover.add((tSwapNs - tStartNs) / 1e6f)
-                Log.d(TAG, "training open ${trainCover.size}/$trainWant: cover ${trainCover.last().toInt()} ms (first move -> panel swap)")
-            } else Log.d(TAG, "training: open skipped (cover screen was off)")
             tStartNs = 0L
+            if (!(tCoverOn && tSwapNs > 0L)) { tNote = "last open skipped: cover screen was off"; Log.d(TAG, "training: $tNote"); publish(); return }
+            trainCover.add((tSwapNs - (tFirstTs - 40_000_000L)) / 1e6f); tTimed++
+            tNote = ""
+            Log.d(TAG, "training open ${trainCover.size}/$trainWant: cover ${trainCover.last().toInt()} ms (first move -> panel swap)")
             if (trainCover.size >= trainWant) {
-                fun med(x: List<Float>) = x.sorted()[x.size / 2].toInt()
-                // inner speed is not trained: the inner panel lights ~300 ms after the swap, usually once the phone
-                // is already flat, so the hinge says nothing about it; it stays a slider setting
-                coverMs = med(trainCover)
-                trainResult = "done $coverMs"; trainWant = 0
-                Log.d(TAG, "training done: cover $coverMs ms")
-            } else trainResult = "${trainCover.size}/$trainWant"
+                // drop opens way off the rest (a pause half-way, a flick): keep 0.6x..1.6x of the middle value
+                val m = med(trainCover)
+                val good = trainCover.filter { it in m * 0.6f..m * 1.6f }
+                if (good.size >= TRAIN_MIN_GOOD || tTimed >= TRAIN_MAX) {
+                    // inner speed is not trained: the inner panel lights ~300 ms after the swap, usually once the phone
+                    // is already flat, so the hinge says nothing about it; it stays a slider setting
+                    coverMs = med(good.ifEmpty { trainCover }).toInt()
+                    trainResult = "done $coverMs"; trainWant = 0
+                    Log.d(TAG, "training done: cover $coverMs ms (${good.size} of ${trainCover.size} opens kept)")
+                    return
+                }
+                val dropped = trainCover.size - good.size
+                trainCover.retainAll(good)
+                tNote = "$dropped open${if (dropped > 1) "s" else ""} way off the rest, a few more please"
+                Log.d(TAG, "training: $tNote")
+            }
         }
+        publish()
     }
+    private fun publish() { trainResult = "${trainCover.size}/$trainWant" + if (tNote.isNotEmpty()) " · $tNote" else "" }
+    private fun med(x: List<Float>) = x.sorted()[x.size / 2]
 
     private var lastInner = false
     private var lastState = -1
@@ -333,8 +355,10 @@ class HelperService : IHelper.Stub {
         Thread { try { GpuTest.warm(n) { Log.d(TAG, it) } } catch (e: Throwable) { Log.e(TAG, "gpu warm failed", e) } }.start()
     }
     override fun rendering(): Boolean = renderOk
+    /** opens <= 0 cancels a training run */
     override fun startTraining(opens: Int) {
-        trainCover.clear(); tStartNs = 0L
+        trainCover.clear(); tStartNs = 0L; tNote = ""; tTimed = 0
+        if (opens <= 0) { trainWant = 0; trainResult = "cancelled"; return }
         trainWant = opens.coerceIn(1, 30); trainResult = "0/$trainWant"
     }
     override fun training(): String = trainResult
@@ -342,7 +366,6 @@ class HelperService : IHelper.Stub {
         if (pkg != "com.vibecodedstudio.nightfold") return "refused"
         val cmds = listOf(
             "pm grant $pkg android.permission.POST_NOTIFICATIONS",
-            "appops set $pkg SYSTEM_ALERT_WINDOW allow",
         )
         return cmds.joinToString("; ") { c ->
             try {
@@ -370,7 +393,6 @@ class HelperService : IHelper.Stub {
     private val capTick = object : Runnable {
         override fun run() { if (enabled && ::getInfo.isInitialized) autoCapture("5 min tick"); cap.postDelayed(this, CAP_EVERY_MS) }
     }
-    private var homePkg: String? = null
     private fun sh(c: String): String = try {
         val p = ProcessBuilder("sh", "-c", c).redirectErrorStream(true).start()
         p.inputStream.bufferedReader().readText().also { p.waitFor() }
@@ -394,8 +416,9 @@ class HelperService : IHelper.Stub {
         if (!force && now - (lastCap[panel] ?: -CAP_MIN_GAP_MS) < CAP_MIN_GAP_MS) return "recent"
         if (intField(info, "state") != 2) return "screen off"
         if (fxShown) return "effect showing"
-        val home = homePkg ?: sh("cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME")
-            .lines().lastOrNull { it.contains('/') }?.substringBefore('/')?.trim().also { homePkg = it }
+        // asked each time (not cached): the user can switch launchers
+        val home = sh("cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME")
+            .lines().lastOrNull { it.contains('/') }?.substringBefore('/')?.trim()
         if (home.isNullOrEmpty()) return "no home app"
         val win = sh("dumpsys window | grep -E 'mCurrentFocus|isKeyguardShowing'")
         if (win.contains("isKeyguardShowing=true")) return "locked"
@@ -422,7 +445,10 @@ class HelperService : IHelper.Stub {
                 // make it readable like the original pictures
                 sh("chmod 666 ${File(dir, "$panel.png").path}")
                 lastCap[panel] = now
-                h.post { fxr?.setPics(Pic.load(File(dir, "cover.png"), 624, 986, 210), Pic.load(File(dir, "inner.png"), 1224, 924, 20)) }
+                // decode + build the blur levels HERE (capture/binder thread, ~100-300 ms for the inner picture), and only
+                // hand the finished pictures to the render thread: decoding there stalled an open starting meanwhile
+                val c = Pic.load(File(dir, "cover.png"), 624, 986, 210); val i = Pic.load(File(dir, "inner.png"), 1224, 924, 20)
+                h.post { fxr?.setPics(c, i) }
                 Log.d(TAG, "captured $panel home screen (display $id, ${wh.first}x${wh.second})")
                 return panel
             }
@@ -467,6 +493,9 @@ class HelperService : IHelper.Stub {
         const val CAP_EVERY_MS = 5 * 60_000L     // light check while a screen is on
         const val MIN_LIT = 0.05f              // a capture less lit than this is a black frame, not a home screen
         const val CAP_MIN_GAP_MS = 10 * 60_000L  // automatic captures per screen at most this often
+        const val TRAIN_PEND_NS = 300_000_000L  // training: a small first rise needs a 2nd reading this soon
+        const val TRAIN_MIN_GOOD = 6            // training: opens needed after dropping the odd ones
+        const val TRAIN_MAX = 16                // training: stop asking after this many opens
         const val QUIET_S = 1.5f            // hinge still this long: stop polling, no arming
     }
 }
