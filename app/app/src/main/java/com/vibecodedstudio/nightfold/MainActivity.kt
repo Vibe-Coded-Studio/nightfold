@@ -93,6 +93,9 @@ class MainActivity : Activity() {
 
         val effects = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         effects.addView(caps("Effects"))
+        // per-effect settings (FxSettings): picking an effect moves the sliders + Finish buttons to its values
+        val fxRefresh = ArrayList<() -> Unit>()
+        fun curFx() = savedFx(sp)
         // groups: Eclipse R-W, bloom-style AI-AP, X-AH, then K-Q, with a divider before each group
         val groupStart = FX_GROUPS.drop(1).map { it.first() }.toSet()
         val order = FX_GROUPS.flatten()
@@ -103,9 +106,11 @@ class MainActivity : Activity() {
                 .apply { cornerRadius = dp(12).toFloat() } else null
             tv.elevation = if (on) dp(6).toFloat() else 0f
             val (l, n) = EFFECTS[i].split(Regex("\\s+"), 2)
-            tv.text = android.text.SpannableString("$l   $n").apply {
+            val own = if (FxSettings.custom(sp, i)) "  •" else ""
+            tv.text = android.text.SpannableString("$l   $n$own").apply {
                 setSpan(android.text.style.ForegroundColorSpan(if (on) Color.WHITE else LILAC), 0, l.length, 0)
                 setSpan(android.text.style.StyleSpan(Typeface.BOLD), 0, l.length, 0)
+                if (own.isNotEmpty()) setSpan(android.text.style.ForegroundColorSpan(LILAC), length - 1, length, 0)
             }
         }
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -116,7 +121,8 @@ class MainActivity : Activity() {
                 textSize = 16f; setTextColor(Color.WHITE); setPadding(dp(14), dp(10), dp(14), dp(10))
                 outlineSpotShadowColor = PURPLE; outlineAmbientShadowColor = PURPLE
                 setOnClickListener {
-                    sp.edit().putInt("fx2", i).apply(); preview.fx = i; mark(i); restartService()
+                    sp.edit().putInt("fx2", i).apply(); preview.fx = i; mark(i)
+                    fxRefresh.forEach { it() }; previewFinish(); restartService()
                     // picking an effect plays it in the preview straight away
                     preview.slowMo = false; preview.playStart = android.os.SystemClock.uptimeMillis()
                 }
@@ -133,9 +139,8 @@ class MainActivity : Activity() {
         }
         preview = FxView(this, preview = true).apply {
             fx = savedFx(sp); this.slide = sp.getBoolean("slide", true); manualAngle = 120f
-            finish(sp.getInt("finMode", 0), sp.getInt("finMs", DEFAULT_FIN_MS), sp.getInt("softBlur", (DEFAULT_SOFT_BLUR * 10).toInt()) / 10f,
-                sp.getInt("softWobble", 0).toFloat())
         }
+        previewFinish()
         card.addView(preview, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         val angleLbl = TextView(this).apply {
             setTextColor(Color.WHITE); textSize = 13f; setPadding(dp(12), dp(6), dp(12), dp(6)); background = round(Color.argb(150, 0, 0, 0), 14)
@@ -168,7 +173,7 @@ class MainActivity : Activity() {
         // opening play speed: how long each half takes, in ms
         fun speedSlider(label: String, key: String, def0: Int, lo: Int, hi: Int, into: LinearLayout = cols, step: Int = 10,
                         fmt: (Int) -> String = { "$it ms" }) {
-            val def = sp.getInt("trained_$key", def0)     // the trained value is "your normal open"
+            val def = FxSettings.shared(sp, key)     // the shared default (cover: the trained "your normal open")
             val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(dp(4), 0, dp(4), 0) }
             row.addView(TextView(this).apply { text = label; setTextColor(Color.WHITE); textSize = 13f; isSingleLine = true }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
@@ -177,18 +182,20 @@ class MainActivity : Activity() {
             val normal = if (key == "coverMs" && sp.contains("trained_coverMs")) "your normal" else "default"
             // up to three sliders share a row: just the number, plus a mark when it is the normal/default value
             fun show(x: Int) { v.text = fmt(x) + (if (x == def) " ✓" else "") }
-            val cur = sp.getInt(key, def); show(cur)
+            val cur = FxSettings.get(sp, curFx(), key); show(cur)
             col.addView(row)
             into.addView(col, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { marginEnd = dp(10) })
-            col.addView(SeekBar(this).apply {
+            val bar = SeekBar(this)
+            fxRefresh.add { val c = FxSettings.get(sp, curFx(), key); bar.progress = (c - lo) / step; show(c) }
+            col.addView(bar.apply {
                 styleBar(this); setPadding(dp(6), dp(4), dp(6), dp(4))
                 max = (hi - lo) / step; progress = (cur - lo) / step
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(b: SeekBar?, p: Int, u: Boolean) { show(lo + p * step) }
                     override fun onStartTrackingTouch(b: SeekBar?) {}
                     override fun onStopTrackingTouch(b: SeekBar?) {
-                        sp.edit().putInt(key, lo + (b?.progress ?: 0) * step).apply()
-                        previewFinish(); restartService()
+                        FxSettings.put(sp, curFx(), key, lo + (b?.progress ?: 0) * step)
+                        mark(curFx()); previewFinish(); restartService()
                     }
                 })
             })
@@ -206,13 +213,14 @@ class MainActivity : Activity() {
         val finHelp = listOf("the fill ends, done", "flows back the other way, then solid", "a second pass the same way, then solid", "rings out from the middle, then solid")
         listOf("Off", "A", "B", "C").forEachIndexed { k, label ->
             val c = chip(label) {
-                sp.edit().putInt("finMode", k).apply()
-                previewFinish(); markFin(k); finLbl.text = finHelp[k]; restartService()
+                FxSettings.put(sp, curFx(), "finMode", k)
+                mark(curFx()); previewFinish(); markFin(k); finLbl.text = finHelp[k]; restartService()
                 preview.slowMo = false; preview.playStart = android.os.SystemClock.uptimeMillis()
             }
             finChips.add(c); finRow.addView(c, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = dp(6) })
         }
-        val fm0 = sp.getInt("finMode", 0); markFin(fm0); finLbl.text = finHelp[fm0]
+        val fm0 = FxSettings.get(sp, curFx(), "finMode"); markFin(fm0); finLbl.text = finHelp[fm0]
+        fxRefresh.add { val m = FxSettings.get(sp, curFx(), "finMode"); markFin(m); finLbl.text = finHelp[m] }
         finRow.addView(finLbl, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         sc.addView(finRow)
         // finish settings under the buttons: its speed, and how blurry the picture stays until it runs
@@ -238,7 +246,10 @@ class MainActivity : Activity() {
             val on = !sp.getBoolean("slide", true)
             sp.edit().putBoolean("slide", on).apply(); preview.slide = on; c.text = slideText(on); restartService()
         }, gap())
-        chips.addView(chip("Reset speeds") { sp.edit().remove("coverMs").remove("innerMs").apply(); restartService(); recreate() }, gap())
+        // back to the shared default for the selected effect only
+        chips.addView(chip("Reset effect") {
+            FxSettings.reset(sp, curFx()); mark(curFx()); fxRefresh.forEach { it() }; previewFinish(); restartService()
+        }, gap())
         sc.addView(chips)
         sc.addView(trainLbl)
         // ---- home-screen pictures: the effect draws what the screen will show, so keep them current ----
@@ -460,8 +471,10 @@ class MainActivity : Activity() {
 
     private fun previewFinish() {
         val sp = getSharedPreferences("fx", MODE_PRIVATE)
-        preview.finish(sp.getInt("finMode", 0), sp.getInt("finMs", DEFAULT_FIN_MS), sp.getInt("softBlur", (DEFAULT_SOFT_BLUR * 10).toInt()) / 10f,
-            sp.getInt("softWobble", 0).toFloat())
+        val f = savedFx(sp)
+        fun g(k: String) = FxSettings.get(sp, f, k)
+        preview.finish(g("finMode"), g("finMs"), g("softBlur") / 10f, g("softWobble").toFloat())
+        preview.timing(g("coverMs"), g("innerMs"))
     }
 
     private fun restartService(force: Boolean = false) {

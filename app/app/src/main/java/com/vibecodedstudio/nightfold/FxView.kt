@@ -79,6 +79,7 @@ class FxRenderer(private var cover: Pic, private var inner: Pic) {
     private var coverHead = 0f
     private var innerHead = -1f            // -1 = inner not shown yet in this open
     private var lastNs = 0L
+    private var pendTs = 0L; private var pendAngle = 0f; private var pendNow = 0L    // a small first rise, waiting
 
     /** Follows the raw readings: starts an open at the first rise from closed, ends it on a close or when done. */
     private fun clock(innerShape: Boolean, innerLit: Boolean) {
@@ -86,14 +87,31 @@ class FxRenderer(private var cover: Pic, private var inner: Pic) {
         val dt = if (lastNs == 0L) 0f else ((nowNs - lastNs) / 1e9f).coerceIn(0f, 0.1f)
         lastNs = nowNs
         val ts = HingeReader.lastTsNs; val la = HingeReader.lastAngle; val pa = HingeReader.prevAngle
+        // a small first rise waits for a 2nd, higher reading: a lone stray reading of a closed phone (0 -> 2 deg as
+        // it came out of his pocket, 11-08 19:38, next reading 3.8 s later) started an open nothing could end before
+        // the 3 s safety. A real open sends a reading every ~40 ms. A big first jump (opened with the cover off:
+        // the first reading can be 28-179 deg) is an open on its own.
+        if (pendTs != 0L && nowNs - pendNow > PEND_NS) { log?.invoke("stray hinge reading ignored (${pendAngle} deg, no 2nd)"); pendTs = 0L }
         if (ts != usedTs && pa >= 0f) {
             usedTs = ts
-            if (!opening && pa <= 20f && la > pa) {   // 20 not 12: a hinge wiggle (30 -> 14 deg) must not eat the real open
+            val second = pendTs != 0L && la > pendAngle
+            if (!opening && !second && pa <= 20f && la > pa && la < START_ALONE) {
+                pendTs = ts; pendAngle = la; pendNow = nowNs
+            } else if (!opening && (second || (pa <= 20f && la > pa))) {   // 20 not 12: a hinge wiggle (30 -> 14 deg) must not eat the real open
+                val firstTs = if (second) pendTs else ts
+                pendTs = 0L
                 opening = true; finished = false
                 // the first moving reading is ~40 ms after the move began, and it reaches us late too
-                coverHead = ((nowNs - (ts - 40_000_000L)) / 1e6f / coverMs).coerceIn(0f, 0.5f)
+                coverHead = ((nowNs - (firstTs - 40_000_000L)) / 1e6f / coverMs).coerceIn(0f, 0.5f)
                 innerHead = -1f; finHead = -1f
-                log?.invoke("open start: reading $la deg, cover head ${"%.2f".format(coverHead)}")
+                log?.invoke("open start: reading $la deg, cover head ${"%.2f".format(coverHead)}, fx ${EFFECTS[fx]}, finish $finMode")
+            } else if (!opening && pendTs != 0L) {
+                pendTs = 0L     // the 2nd reading was not higher: not an open
+            } else if (opening && innerHead < 0f && !innerShape && la <= 3f) {
+                // a closed phone's hinge jitters a few degrees when it is picked up or put down (0 -> 7 -> 0): that
+                // starts an "open" the -8 deg close rule can't end, so the cover sat on the drained effect until the
+                // 3 s safety. A real open never reads closed again before the inner panel takes over.
+                opening = false; log?.invoke("open cancelled: hinge back to closed ($la deg)")
             } else if (opening && la < pa - 8f) {
                 opening = false; log?.invoke("open -> close at $la deg")
             } else if (finished && la < pa - 8f) {
@@ -123,7 +141,10 @@ class FxRenderer(private var cover: Pic, private var inner: Pic) {
     private fun endHead() = if (finMode > 0) (if (innerHead >= 1f) max(0f, finHead) else -1f) else innerHead
     private fun endMs() = if (finMode > 0) finMs.toFloat() else innerMs.toFloat()
     var active = false; private set
-    private val shader = RuntimeShader(FX_SHADER)
+    // one small shader per effect (fxShaderSource), made the first time that effect draws and kept
+    private val shaders = HashMap<Int, RuntimeShader>()
+    private var shader = shaderFor(0)
+    private fun shaderFor(n: Int) = shaders.getOrPut(n) { RuntimeShader(fxShaderSource(n)) }
     private val paint = Paint()
     private var bound: Pic? = null
     private var t0 = SystemClock.uptimeMillis()
@@ -150,7 +171,8 @@ class FxRenderer(private var cover: Pic, private var inner: Pic) {
      * to black while fully on (overlay/helper), transparent otherwise. Returns true while the effect is showing.
      */
     fun draw(canvas: Canvas, dw: Int, dh: Int, innerShape: Boolean, a: Float, armedNow: Boolean, preview: Boolean,
-             innerLit: Boolean = innerShape, previewFin: Float = -1f, previewProg: Float = -1f): Boolean {
+             innerLit: Boolean = innerShape, previewFin: Float = -1f, previewProg: Float = -1f, testAlpha: Int = -1,
+             panelOff: Boolean = false): Boolean {
         val now = SystemClock.uptimeMillis()
         if (!preview) clock(innerShape, innerLit)
         val timed = opening && !preview
@@ -171,9 +193,17 @@ class FxRenderer(private var cover: Pic, private var inner: Pic) {
         // a < 0 = no hinge reading yet (helper just started): never draw on a guess, or an already open inner
         // screen would be covered by the effect's first frame
         val known = preview || a >= 0f
-        val busy = preview || (known && (armedNow || timed || (if (innerShape) a < 176f else a > 6f)))
+        // parked: the hinge has sat still part-way (phone propped half open) with no timed open running. The
+        // angle-driven fill would hold its frame forever: 11-09 06:00 it drew on the cover for 5 min at ~20 deg.
+        // It comes back on the next hinge move.
+        val parked = !preview && !timed && !armedNow &&
+            (SystemClock.elapsedRealtimeNanos() - HingeReader.lastTsNs) / 1e9f > PARK_S
+        // the panel we would draw on is off and nothing is arming the hand-off: nobody can see it
+        val dark = !preview && panelOff && !armedNow
+        val busy = preview || (known && !parked && !dark && (armedNow || timed || (if (innerShape) a < 176f else a > 6f)))
         if (busy) lastBusy = now
-        val show = busy || now - lastBusy < 300
+        val show = busy || (!parked && !dark && now - lastBusy < 300)
+        if (!preview && active && !show && (parked || dark)) log?.invoke("effect stopped: ${if (dark) "screen off" else "hinge parked at ${a.toInt()} deg"}")
         if (!preview && (show != active || innerShape != loggedInner)) {
             loggedInner = innerShape
             log?.invoke("draw: show=$show inner=$innerShape ${dw}x$dh angle=${a.toInt()} prog=${"%.2f".format(prog)} armed=$armedNow")
@@ -186,6 +216,8 @@ class FxRenderer(private var cover: Pic, private var inner: Pic) {
         }
         if (!show) return false
 
+        val sh = shaderFor(fx)
+        if (sh !== shader) { shader = sh; bound = null }      // a new shader needs its pictures bound
         bind(if (innerShape) inner else cover)
         shader.setFloatUniform("res", dw.toFloat(), dh.toFloat())
         shader.setFloatUniform("S", dh / 936f)
@@ -195,7 +227,6 @@ class FxRenderer(private var cover: Pic, private var inner: Pic) {
         shader.setFloatUniform("slide", if (slide) 1f else 0f)
         shader.setFloatUniform("amp", AMP[fx])
         shader.setFloatUniform("tail", TAIL[fx])
-        shader.setIntUniform("fx", fx)
         val fin = if (!innerShape || finMode == 0) -1f else if (timed) (if (innerHead >= 1f && finHead >= 0f) finHead.coerceIn(0f, 1f) else -1f)
             else if (preview) previewFin else -1f
         shader.setFloatUniform("fin", fin)
@@ -209,8 +240,9 @@ class FxRenderer(private var cover: Pic, private var inner: Pic) {
                 else (255 * ss(0f, 0.04f, coverHead)).toInt())
             else if (preview || armedNow) 255 else if (innerShape) (255 * (1f - ss(176f, 179.5f, a))).toInt()
             else (255 * ss(4f, 8f, a)).toInt()
+        if (testAlpha >= 0) paint.alpha = testAlpha       // GpuTest: the fade's see-through draw
         // whole surface black while fully on (ready for the other panel's size), see-through while fading in/out
-        if (!preview) canvas.drawColor(if (paint.alpha >= 255) Color.BLACK else Color.TRANSPARENT, android.graphics.PorterDuff.Mode.SRC)
+        if (!preview || testAlpha >= 0) canvas.drawColor(if (paint.alpha >= 255) Color.BLACK else Color.TRANSPARENT, android.graphics.PorterDuff.Mode.SRC)
         canvas.drawRect(0f, 0f, dw.toFloat(), dh.toFloat(), paint)
         if (!preview && now - lastFrameLog > 200) {
             lastFrameLog = now
@@ -225,6 +257,9 @@ const val DEFAULT_INNER_MS = 1000
 const val DEFAULT_FIN_MS = 900
 const val DEFAULT_SOFT_BLUR = 1.2f
 private const val FADE_MS = 60f
+private const val PEND_NS = 300_000_000L     // how long a small first rise waits for the 2nd reading
+private const val PARK_S = 3f                 // hinge still this long, no timed open: the effect stops (like the 3 s safety)
+private const val START_ALONE = 15f          // a first reading this high starts an open by itself (jitter seen: <= 11 deg)
 
 internal fun ss(a: Float, b: Float, x: Float): Float {
     val k = ((x - a) / (b - a)).coerceIn(0f, 1f); return k * k * (3 - 2 * k)

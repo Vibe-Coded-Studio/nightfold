@@ -20,7 +20,7 @@ import android.view.WindowManager
  * blocks touches or costs anything at rest.
  */
 const val SHIZUKU_PKG = "moe.shizuku.privileged.api"
-const val BuildConfigVersion = 13   // bump when HelperService changes: Shizuku restarts the helper
+const val BuildConfigVersion = 31   // bump when HelperService changes: Shizuku restarts the helper
 
 class FoldService : Service() {
     companion object {
@@ -50,6 +50,13 @@ class FoldService : Service() {
         } catch (_: Throwable) {}
         // after a reboot give Shizuku a moment (it may start itself) before asking the user
         handler.postDelayed(checkLater, 15000)
+        contentResolver.registerContentObserver(android.provider.Settings.Global.getUriFor(GPU_TEST_KEY), false, gpuTestObs)
+    }
+    // GPU pipeline test (GpuTest), started from adb: 'settings put global nightfold_gputest 1' (only shell can write it)
+    private val gpuTestObs = object : android.database.ContentObserver(android.os.Handler(android.os.Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) {
+            if (android.provider.Settings.Global.getString(contentResolver, GPU_TEST_KEY) == "1") GpuTest.run(this@FoldService)
+        }
     }
     private val checkLater = Runnable { checkShizuku() }
 
@@ -246,11 +253,14 @@ class FoldService : Service() {
         val sp = getSharedPreferences("fx", Context.MODE_PRIVATE)
         view?.fx = savedFx(sp)
         view?.slide = sp.getBoolean("slide", true)
-        val cm = sp.getInt("coverMs", DEFAULT_COVER_MS); val im = sp.getInt("innerMs", DEFAULT_INNER_MS)
+        // the selected effect's own settings, or the shared default for the ones it has not changed (FxSettings)
+        val f = savedFx(sp)
+        fun g(k: String) = FxSettings.get(sp, f, k)
+        val cm = g("coverMs"); val im = g("innerMs")
         view?.timing(cm, im)
-        val fm = sp.getInt("finMode", 0); val fms = sp.getInt("finMs", DEFAULT_FIN_MS)
-        val sb = sp.getInt("softBlur", (DEFAULT_SOFT_BLUR * 10).toInt())
-        val sw = sp.getInt("softWobble", 0)
+        val fm = g("finMode"); val fms = g("finMs")
+        val sb = g("softBlur")
+        val sw = g("softWobble")
         view?.finish(fm, fms, sb / 10f, sw.toFloat())
         try { helper?.setFx(savedFx(sp), sp.getBoolean("slide", true)); helper?.setTiming(cm, im); helper?.setFinish(fm, fms); helper?.setSoft(sb, sw) } catch (_: Throwable) {}
     }
@@ -260,6 +270,7 @@ class FoldService : Service() {
         handler.removeCallbacks(safety); handler.removeCallbacks(checkLater)
         try { rikka.shizuku.Shizuku.removeBinderReceivedListener(shizukuUp); rikka.shizuku.Shizuku.removeBinderDeadListener(shizukuDown) } catch (_: Throwable) {}
         hideStartShizuku()
+        contentResolver.unregisterContentObserver(gpuTestObs)
         try { helper?.setEnabled(false); rikka.shizuku.Shizuku.unbindUserService(helperArgs, helperConn, true) } catch (_: Throwable) {}
         helper = null
         removeOverlay()
@@ -267,3 +278,5 @@ class FoldService : Service() {
         super.onDestroy()
     }
 }
+
+private const val GPU_TEST_KEY = "nightfold_gputest"

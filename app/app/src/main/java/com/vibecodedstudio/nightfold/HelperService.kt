@@ -1,5 +1,6 @@
 package com.vibecodedstudio.nightfold
 
+import android.graphics.BitmapFactory
 import android.graphics.HardwareRenderer
 import android.graphics.PixelFormat
 import android.graphics.RenderNode
@@ -268,7 +269,8 @@ class HelperService : IHelper.Stub {
         // waking with the phone lying open is not an open, so nothing is drawn
         val armed = curInner && (curState != 2 || SystemClock.uptimeMillis() - offAt < 500) && smoother.quietFor() < QUIET_S
         val canvas = node.beginRecording(size, size)
-        val show = try { r.draw(canvas, curW, curH, curInner, a, armed, preview = false, innerLit = curInner && curState == 2) } finally { node.endRecording() }
+        val show = try { r.draw(canvas, curW, curH, curInner, a, armed, preview = false, innerLit = curInner && curState == 2,
+            panelOff = curState != 2) } finally { node.endRecording() }
         val t = SurfaceControl.Transaction()
         var changed = false
         if (curStack != fxStack) { setStack.invoke(t, sc, curStack); fxStack = curStack; changed = true }
@@ -277,7 +279,7 @@ class HelperService : IHelper.Stub {
             hr.createRenderRequest().setVsyncTime(System.nanoTime()).syncAndDraw()
             if (curInner && drawnAt == 0L) drawnAt = SystemClock.uptimeMillis()
         }
-        if (show != fxShown) { if (fxShown && !show && curInner) cap.postDelayed({ capture(false) }, 1500)
+        if (show != fxShown) { if (fxShown && !show && curInner) cap.postDelayed({ autoCapture("after open") }, 1500)
             t.setVisibility(sc, show); fxShown = show; changed = true; Log.d(TAG, "effect layer ${if (show) "ON" else "off"} inner=$curInner ${curW}x$curH") }
         if (changed) t.apply()
     }
@@ -318,7 +320,18 @@ class HelperService : IHelper.Stub {
     override fun setEnabled(on: Boolean) { enabled = on; if (on) h.post { wake() } }
     override fun status(): String = st
     override fun innerDrawn() { /* unused, kept for the AIDL interface */ }
-    override fun setFx(fx: Int, slide: Boolean) { this.fx = fx.coerceIn(0, EFFECTS.size - 1); this.slide = slide }
+    override fun setFx(fx: Int, slide: Boolean) {
+        val n = fx.coerceIn(0, EFFECTS.size - 1)
+        this.slide = slide
+        if (n != this.fx || warmed != n) warm(n)
+        this.fx = n
+    }
+    // build the selected effect's GPU pipelines now, not during the first open (GpuTest.warm)
+    @Volatile private var warmed = -1
+    private fun warm(n: Int) {
+        warmed = n
+        Thread { try { GpuTest.warm(n) { Log.d(TAG, it) } } catch (e: Throwable) { Log.e(TAG, "gpu warm failed", e) } }.start()
+    }
     override fun rendering(): Boolean = renderOk
     override fun startTraining(opens: Int) {
         trainCover.clear(); tStartNs = 0L
@@ -355,7 +368,7 @@ class HelperService : IHelper.Stub {
     private val cap = Handler(capThread.looper)
     private val lastCap = HashMap<String, Long>()
     private val capTick = object : Runnable {
-        override fun run() { if (enabled && ::getInfo.isInitialized) capture(false); cap.postDelayed(this, CAP_EVERY_MS) }
+        override fun run() { if (enabled && ::getInfo.isInitialized) autoCapture("5 min tick"); cap.postDelayed(this, CAP_EVERY_MS) }
     }
     private var homePkg: String? = null
     private fun sh(c: String): String = try {
@@ -363,7 +376,12 @@ class HelperService : IHelper.Stub {
         p.inputStream.bufferedReader().readText().also { p.waitFor() }
     } catch (e: Throwable) { "" }
 
-    override fun captureNow(): String = capture(true)
+    override fun captureNow(): String = capture(true).also { if (it != "inner" && it != "cover") Log.d(TAG, "capture (button) skipped: $it") }
+    /** automatic capture; logs why it was skipped so a wrong picture can be traced (not "recent": that's the normal case) */
+    private fun autoCapture(why: String) {
+        val r = capture(false)
+        if (r != "inner" && r != "cover" && r != "recent") Log.d(TAG, "capture ($why) skipped: $r")
+    }
 
     @Synchronized private fun capture(force: Boolean): String {
         // read the display now: cur* stop updating while the helper idles (hinge still), so they can say "on" for a
@@ -391,6 +409,14 @@ class HelperService : IHelper.Stub {
             val wh = pngSize(tmp) ?: continue
             // the lit panel is the one with the current display's size (Galaxy Z Fold: inner 2448x1848, cover 1248x1972)
             if ((wh.first == dw && wh.second == dh) || (wh.first == dh && wh.second == dw)) {
+                // never replace a good picture with a black one (a panel still waking or dimming reads as black;
+                // the effect then drew black where the home screen should be). A dark home screen is still ~20% lit.
+                val lit = litFraction(tmp)
+                if (lit < MIN_LIT) {
+                    tmp.delete()
+                    Log.d(TAG, "capture rejected: $panel frame is black (${"%.1f".format(lit * 100)}% lit), kept the old picture")
+                    return "black frame"
+                }
                 if (!tmp.renameTo(File(dir, "$panel.png"))) return "save failed"
                 // the shell creates it -rw-rw----, which the app (its preview + fallback overlay) can't read;
                 // make it readable like the original pictures
@@ -404,6 +430,14 @@ class HelperService : IHelper.Stub {
         tmp.delete()
         return "capture failed"
     }
+    /** share of pixels that aren't near-black, on a 1/16 sample (0 when unreadable) */
+    private fun litFraction(f: File): Float = try {
+        val b = BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = 16 })
+        if (b == null) 0f else {
+            val px = IntArray(b.width * b.height); b.getPixels(px, 0, b.width, 0, 0, b.width, b.height); b.recycle()
+            px.count { maxOf((it shr 16) and 255, (it shr 8) and 255, it and 255) > 16 }.toFloat() / px.size
+        }
+    } catch (e: Throwable) { 0f }
     private fun pngSize(f: File): Pair<Int, Int>? = try {
         f.inputStream().use { s ->
             val b = ByteArray(24); if (s.read(b) < 24) return null
@@ -431,6 +465,7 @@ class HelperService : IHelper.Stub {
         const val FADE = 120L
         const val MAX_HOLD = 600L
         const val CAP_EVERY_MS = 5 * 60_000L     // light check while a screen is on
+        const val MIN_LIT = 0.05f              // a capture less lit than this is a black frame, not a home screen
         const val CAP_MIN_GAP_MS = 10 * 60_000L  // automatic captures per screen at most this often
         const val QUIET_S = 1.5f            // hinge still this long: stop polling, no arming
     }
