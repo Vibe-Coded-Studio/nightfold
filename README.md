@@ -4,16 +4,19 @@ A fold-open animation for Samsung Galaxy Z Fold phones. As you open the phone, t
 and the inner screen builds in with an effect that follows the hinge, covering the black gap Android leaves when it
 switches panels. Closing plays it in reverse.
 
+[![Nightfold setup tutorial](https://img.youtube.com/vi/nGb0BusZnGo/maxresdefault.jpg)](https://youtu.be/nGb0BusZnGo)
+
 ## Effects
 
-27 effects, grouped in the app:
+29 effects, grouped in the app:
 
 - **Eclipse:** R Eclipse Bloom (default), S Corona, U Constellation, V Nebula Burn
+- **Seasonal:** AQ Snow Day, AR Autumn Leaves, AS Gift Wrap
 - **Bloom-style:** AI Honeycomb Bloom, AJ Lightning Veins, AK Stained Glass, AL Tile Flip, AM Spiral Galaxy,
   AN Kintsugi, AO Flower Bloom, AP Frosted Glass
 - **More:** AA Eclipse Ink, AB Fireflies, AC Ember Burn, AD Starfall, AE Petal Storm, AF Frost Bloom, AG Aurora,
   AH Glitch Warp
-- **Classic builds:** K Stardust, L Pixel Assemble, M Sandstorm, N Sketch to Paint, O Hologram, P Crystal, Q Raindrops
+- **Classic builds:** K Stardust, L Pixel Assemble, N Sketch to Paint, O Hologram, P Crystal, Q Raindrops
 
 **Finish pass** (Off / A / B / C): once the fill is done, the effect sweeps across one more time (back the other way,
 the same way again, or out from the middle) and leaves the solid screen behind it. Speed, blur and wobble sliders
@@ -31,6 +34,8 @@ both screens also capture themselves now and then).
   draw above the system's panel switch. Without it the effect stays off and a notification asks you to start it.
 
 ## Setup
+
+▶ [Watch the setup tutorial](https://youtu.be/nGb0BusZnGo) (2 min)
 
 1. Download the latest `Nightfold-v*.apk` from [Releases](https://github.com/Vibe-Coded-Studio/nightfold/releases), install it and open it. A three-step setup screen walks you through it:
 2. **Get Shizuku**, then **Start Shizuku** (the first time, Shizuku guides you through Wireless debugging).
