@@ -292,30 +292,22 @@ class MainActivity : Activity() {
             val hp = FoldService.helper
             if (hp == null) { capLbl.text = "Needs the helper connected (turn the effect on)"; return@chip }
             if (narrow) { busy("Open your phone, then press Capture inner screen"); return@chip }
-            captureHere(hp)
+            withCaptureConsent { captureHere(hp) }
         }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginEnd = dp(8) })
         capRow.addView(chip("Capture outer screen") {
             val hp = FoldService.helper
             if (hp == null) { capLbl.text = "Needs the helper connected (turn the effect on)"; return@chip }
-            if (narrow) { captureHere(hp); return@chip }    // already on the cover: same as the inner button
-            // open: switch to the cover for a moment by itself; a phone that won't switch falls back to "close it"
-            busy("Hold on a few seconds, switching to the outer screen to capture it")
-            Thread {
-                Thread.sleep(1500)
-                val r = try { hp.captureCoverSwitch() } catch (e: Throwable) { "failed" }
-                if (r == "no switch") {
-                    try { hp.captureCover(COVER_WAIT_MS); coverPending = true; capResult = null } catch (e: Throwable) { capResult = "Not captured: helper error" }
-                    runOnUiThread { if (coverPending) busy("Close your phone and unlock the outer screen, Nightfold comes back when it's captured") else showCaptures() }
-                    return@Thread
-                }
-                capResult = if (r == "cover") "Captured the outer screen ✓" else "Not captured: $r"
-                val back = try { hp.openApp() } catch (e: Throwable) { false }
-                if (!back) startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
-                runOnUiThread { showCaptures() }
-            }.start()
+            if (narrow) { withCaptureConsent { captureHere(hp) }; return@chip }    // already on the cover: same as the inner button
+            withCaptureConsent { captureOuter(hp) }
         })
+        // take consent back: no more pictures, the ones taken are deleted (the effect falls back to plain colours)
         sc.addView(capRow)
         sc.addView(capLbl)
+        // own line: three chips don't fit across the cover screen
+        sc.addView(chip("Forget pictures") {
+            if (!getSharedPreferences("fx", MODE_PRIVATE).getBoolean(CAP_CONSENT, false)) { capLbl.text = "No home-screen pictures are being used"; return@chip }
+            forgetPictures()
+        }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(6) })
         showCaptures()
         val top = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(14) }
         if (narrow) {
@@ -349,6 +341,53 @@ class MainActivity : Activity() {
     private lateinit var setup: View
     private var skipBtn: TextView? = null
     private val stepViews = ArrayList<Triple<TextView, TextView, TextView>>()   // circle, body, button
+    /** "Capture outer screen" with the phone open: switch to the cover for a moment by itself; a phone that won't
+     *  switch falls back to "close it and unlock the cover" */
+    private fun captureOuter(hp: IHelper) {
+        capLbl.text = "Hold on a few seconds, switching to the outer screen to capture it"; capLbl.setTextColor(Color.WHITE)
+        Thread {
+            Thread.sleep(1500)
+            val r = try { hp.captureCoverSwitch() } catch (e: Throwable) { "failed" }
+            if (r == "no switch") {
+                try { hp.captureCover(COVER_WAIT_MS); coverPending = true; capResult = null } catch (e: Throwable) { capResult = "Not captured: helper error" }
+                runOnUiThread { if (coverPending) { capLbl.text = "Close your phone and unlock the outer screen, Nightfold comes back when it's captured"; capLbl.setTextColor(Color.WHITE) } else showCaptures() }
+                return@Thread
+            }
+            capResult = if (r == "cover") "Captured the outer screen ✓" else "Not captured: $r"
+            val back = try { hp.openApp() } catch (e: Throwable) { false }
+            if (!back) startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+            runOnUiThread { showCaptures() }
+        }.start()
+    }
+
+    /** Play prominent disclosure: nothing is captured (buttons or automatic) until the user taps Agree here once. */
+    private fun withCaptureConsent(then: () -> Unit) {
+        val sp = getSharedPreferences("fx", MODE_PRIVATE)
+        if (sp.getBoolean(CAP_CONSENT, false)) { then(); return }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Use your home screen in the effect?")
+            .setMessage("Nightfold takes a screenshot of your home screen (inner and outer screen) and uses it as the " +
+                "animation's background when you open or close your phone, so the effect shows your real wallpaper and icons.\n\n" +
+                "Screenshots are only taken while your home screen is showing, now and automatically later to keep them current. " +
+                "They stay on this phone, are never uploaded or shared, and are deleted if you tap Forget pictures or uninstall Nightfold.")
+            .setPositiveButton("Agree") { _, _ ->
+                sp.edit().putBoolean(CAP_CONSENT, true).apply()
+                try { FoldService.helper?.setCaptureAllowed(true) } catch (_: Throwable) {}
+                then()
+            }
+            .setNegativeButton("Not now") { _, _ -> capLbl.text = "Not captured: the effect uses plain colours instead" }
+            .show()
+    }
+
+    private fun forgetPictures() {
+        getSharedPreferences("fx", MODE_PRIVATE).edit().putBoolean(CAP_CONSENT, false).apply()
+        try { FoldService.helper?.setCaptureAllowed(false) } catch (_: Throwable) {}
+        val dir = getExternalFilesDir(null)
+        listOf("inner.png", "cover.png", "cap_tmp.png").forEach { java.io.File(dir, it).delete() }
+        if (::preview.isInitialized) preview.reloadPics()
+        showCaptures(); capLbl.text = "Pictures deleted. Capture again any time to use your home screen."
+    }
+
     private fun shizukuInstalled() = try { packageManager.getPackageInfo(SHIZUKU_PKG, 0); true } catch (_: Throwable) { false }
     private fun shizukuUp() = try { rikka.shizuku.Shizuku.pingBinder() } catch (_: Throwable) { false }
     private fun shizukuAllowed() = shizukuUp() && try {

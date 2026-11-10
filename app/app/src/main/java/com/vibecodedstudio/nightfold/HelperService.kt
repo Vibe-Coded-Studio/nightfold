@@ -33,6 +33,8 @@ class HelperService : IHelper.Stub {
     private val thread = HandlerThread("fd-render").apply { start() }
     private val h = Handler(thread.looper)
     @Volatile private var enabled = false
+    /** the user agreed to home-screen pictures in the app (Play prominent disclosure). Off = no capture at all. */
+    @Volatile private var capAllowed = false
     @Volatile private var st = "starting"
     @Volatile private var renderOk = false
     @Volatile private var fx = 0
@@ -435,6 +437,7 @@ class HelperService : IHelper.Stub {
     @Volatile private var coverJob = "idle"
     private var coverDeadline = 0L; private var coverHomeSent = false; private var coverReadyAt = 0L
     override fun captureCover(timeoutMs: Int) { cap.post {
+        if (!capAllowed) { coverJob = "not allowed"; return@post }
         coverJob = "waiting"; coverDeadline = SystemClock.uptimeMillis() + timeoutMs; coverHomeSent = false; coverReadyAt = 0L
         coverGen++                                          // the automatic tries step aside while the button's wait runs
         cap.removeCallbacks(coverStep); cap.post(coverStep)
@@ -481,6 +484,7 @@ class HelperService : IHelper.Stub {
         return false
     }
     override fun captureCoverSwitch(): String {
+        if (!capAllowed) return "not allowed"
         val p = panelNow() ?: return "no display info"
         if (!p.first) return "already on the cover"
         try {
@@ -503,14 +507,16 @@ class HelperService : IHelper.Stub {
             waitPanel(true, 3000)
         }
     }
+    override fun setCaptureAllowed(ok: Boolean) { capAllowed = ok; Log.d(TAG, "capture allowed: $ok") }
     override fun captureNow(): String = capture(true).also { if (it != "inner" && it != "cover") Log.d(TAG, "capture (button) skipped: $it") }
     /** automatic capture; logs why it was skipped so a wrong picture can be traced (not "recent": that's the normal case) */
     private fun autoCapture(why: String) {
         val r = capture(false)
-        if (r != "inner" && r != "cover" && r != "recent") Log.d(TAG, "capture ($why) skipped: $r")
+        if (r != "inner" && r != "cover" && r != "recent" && r != "not allowed") Log.d(TAG, "capture ($why) skipped: $r")
     }
 
     @Synchronized private fun capture(force: Boolean): String {
+        if (!capAllowed) return "not allowed"
         // read the display now: cur* stop updating while the helper idles (hinge still), so they can say "on" for a
         // screen that has since gone off, and without a lock screen that would save a black picture
         val info = try { getInfo.invoke(dmg, 0) } catch (_: Throwable) { null } ?: return "no display info"

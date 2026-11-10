@@ -26,5 +26,7 @@ interface IHelper {
     String captureCoverSwitch() = 19;               // phone open: switch to the cover for a moment (device_state CLOSED),
                                                     // capture its home screen, switch back ("cover" or why not; "no switch"
                                                     // = this phone wouldn't switch, use captureCover instead)
+    void setCaptureAllowed(boolean ok) = 20;        // the user agreed to home-screen pictures (Play disclosure, 0.3.0);
+                                                    // false = no capture of any kind
     void destroy() = 16777114;                      // Shizuku's reserved "destroy" transaction
 }

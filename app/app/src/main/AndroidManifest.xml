@@ -17,7 +17,7 @@
         </activity>
         <service android:name=".FoldService" android:exported="false" android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Draws the fold-open animation over the screen, driven by the hinge angle." />
+                android:value="Plays a short full-screen animation the moment the user opens or closes their foldable phone. The service listens to the hinge angle and device state while the app is in the background, because the fold can happen at any time. The user turns it on in the app, sees an ongoing notification while it runs, and can stop it from the notification's Stop button or the in-app switch. No data leaves the device." />
         </service>
         <receiver android:name=".RestoreReceiver" android:exported="false">
             <intent-filter>

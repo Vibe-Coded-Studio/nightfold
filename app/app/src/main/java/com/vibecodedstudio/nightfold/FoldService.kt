@@ -15,7 +15,7 @@ import android.os.IBinder
  * at 80% opacity and redrew every frame forever. Without Shizuku the effect is off and a notification asks for it.
  */
 const val SHIZUKU_PKG = "moe.shizuku.privileged.api"
-const val BuildConfigVersion = 38   // bump when HelperService changes: Shizuku restarts the helper
+const val BuildConfigVersion = 39   // bump when HelperService changes: Shizuku restarts the helper
 
 class FoldService : Service() {
     companion object {
@@ -74,6 +74,12 @@ class FoldService : Service() {
     private fun hideStartShizuku() { getSystemService(NotificationManager::class.java).cancel(2) }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // the notification's Stop button (Play: the user must be able to stop a foreground service): same as the switch
+        if (intent?.action == ACTION_STOP) {
+            getSharedPreferences("fx", Context.MODE_PRIVATE).edit().putBoolean("enabled", false).apply()
+            stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
+            return START_NOT_STICKY
+        }
         startAsForeground()
         running = true
         applyPrefs()
@@ -84,8 +90,13 @@ class FoldService : Service() {
     private fun startAsForeground() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel("fx", "Fold effect", NotificationManager.IMPORTANCE_MIN))
+        val flags = android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+        val open = android.app.PendingIntent.getActivity(this, 3, Intent(this, MainActivity::class.java), flags)
+        val stop = android.app.PendingIntent.getService(this, 4, Intent(this, FoldService::class.java).setAction(ACTION_STOP), flags)
         val n = Notification.Builder(this, "fx").setContentTitle("Nightfold is on")
-            .setSmallIcon(android.R.drawable.ic_menu_rotate).build()
+            .setContentText("Plays the fold animation when you open or close your phone")
+            .setSmallIcon(android.R.drawable.ic_menu_rotate).setContentIntent(open)
+            .addAction(Notification.Action.Builder(null, "Stop", stop).build()).build()
         startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
     }
 
@@ -151,6 +162,7 @@ class FoldService : Service() {
         val fm = g("finMode"); val fms = g("finMs")
         val sb = g("softBlur")
         val sw = g("softWobble")
+        try { helper?.setCaptureAllowed(sp.getBoolean(CAP_CONSENT, false)) } catch (_: Throwable) {}
         try { helper?.setFx(savedFx(sp), sp.getBoolean("slide", true)); helper?.setTiming(cm, im); helper?.setFinish(fm, fms); helper?.setSoft(sb, sw) } catch (_: Throwable) {}
     }
 
@@ -173,3 +185,6 @@ class FoldService : Service() {
 }
 
 private const val GPU_TEST_KEY = "nightfold_gputest"
+const val ACTION_STOP = "com.vibecodedstudio.nightfold.STOP"
+/** "fx" pref: the user agreed to home-screen pictures (Play prominent disclosure, 0.3.0) */
+const val CAP_CONSENT = "capConsent"
