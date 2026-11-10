@@ -11,8 +11,8 @@ android {
         applicationId = "com.vibecodedstudio.nightfold"
         minSdk = 34          // RuntimeShader (AGSL) 33, special-use foreground service 34
         targetSdk = 36   // Play: new apps + updates must target API 36 since 2026-08-31
-        versionCode = 6
-        versionName = "0.3.0"
+        versionCode = 7
+        versionName = "0.3.1"
     }
     // Release signing: set NIGHTFOLD_SIGNING in ~/.gradle/gradle.properties to a properties file with
     // storeFile, storePassword, keyAlias, keyPassword. Without it the release build is left unsigned.

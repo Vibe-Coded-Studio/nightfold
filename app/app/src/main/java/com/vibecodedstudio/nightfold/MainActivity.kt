@@ -512,6 +512,7 @@ class MainActivity : Activity() {
         stopService(Intent(this, FoldService::class.java)); refresh() }
 
     private val ui = android.os.Handler(android.os.Looper.getMainLooper())
+    private val runningCb: () -> Unit = { refresh() }
     private lateinit var trainLbl: TextView
     private lateinit var trainCancel: TextView
     private val trainPoll = Runnable { pollTraining() }
@@ -592,7 +593,7 @@ class MainActivity : Activity() {
     }
     override fun onStart() {
         super.onStart()
-        FoldService.onRunningChanged = { refresh() }
+        FoldService.onRunningChanged = runningCb
         if (::trainLbl.isInitialized) pollTraining()        // a training run still going: show it again
         try {
             rikka.shizuku.Shizuku.addRequestPermissionResultListener(permListener)
@@ -600,7 +601,7 @@ class MainActivity : Activity() {
         } catch (_: Throwable) {}
     }
     override fun onStop() {
-        FoldService.onRunningChanged = null
+        if (FoldService.onRunningChanged === runningCb) FoldService.onRunningChanged = null   // never clear a newer screen's
         ui.removeCallbacks(trainPoll)
         ui.removeCallbacks(capWatch)
         try {

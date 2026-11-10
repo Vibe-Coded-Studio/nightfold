@@ -575,6 +575,7 @@ class HelperService : IHelper.Stub {
     override fun setSoft(blurTenths: Int, wobble: Int) { softBlur = blurTenths.coerceIn(0, 30) / 10f; softWobble = wobble.coerceIn(0, 10).toFloat() }
     override fun setTiming(coverMs: Int, innerMs: Int) { this.coverMs = coverMs.coerceIn(50, 2000); this.innerMs = innerMs.coerceIn(50, 2500) }
     override fun destroy() {
+        HingeReader.stopNow()          // its logcat would outlive this process otherwise
         try {
             val t = SurfaceControl.Transaction()
             black?.let { t.setVisibility(it, false).reparent(it, null) }

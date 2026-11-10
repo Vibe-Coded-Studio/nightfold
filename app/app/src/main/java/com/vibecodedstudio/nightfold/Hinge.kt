@@ -35,14 +35,34 @@ object HingeReader {
     class Snap(val ts: Long, val a: Float, val pts: Long, val pa: Float)
     @Synchronized fun snap() = Snap(lastTsNs, lastAngle, prevTsNs, prevAngle)
 
+    /** The logcat process now feeding us (read by stopNow, so the helper can close it before it exits). */
+    @Volatile private var proc: Process? = null
+    private val CMD = listOf("logcat", "-v", "raw", "-T", "1", "-s", "sensors-hal:I")
+
+    /** Readers left behind by an earlier helper (11-10: a killed helper's logcat outlived it; 31 piled up and used
+     *  ~4% of a core around the clock). Only exact copies of our own command whose parent is gone (reparented to
+     *  init, ppid 1) are stopped; the helper runs as the shell user, so it can only signal shell processes anyway. */
+    fun killOrphans() {
+        val want = CMD.joinToString("\u0000") + "\u0000"
+        java.io.File("/proc").listFiles()?.forEach { d ->
+            val pid = d.name.toIntOrNull() ?: return@forEach
+            try {
+                if (java.io.File(d, "cmdline").readText() != want) return@forEach
+                val ppid = java.io.File(d, "stat").readText().substringAfterLast(')').trim().split(' ')[1].toInt()
+                if (ppid == 1) { android.os.Process.sendSignal(pid, 9); Log.d(TAG, "stopped leftover logcat $pid") }
+            } catch (_: Exception) {}
+        }
+    }
+
     fun start() {
         if (thread?.isAlive == true) return
+        killOrphans()
         running = true
         thread = Thread({
             while (running) {
                 var p: Process? = null
                 try {
-                    p = ProcessBuilder("logcat", "-v", "raw", "-T", "1", "-s", "sensors-hal:I").redirectErrorStream(true).start()
+                    p = ProcessBuilder(CMD).redirectErrorStream(true).start(); proc = p
                     p.inputStream.bufferedReader().useLines { lines ->
                         for (l in lines) {
                             if (!running) break
@@ -58,13 +78,17 @@ object HingeReader {
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "logcat reader: $e")
-                } finally { p?.destroy() }      // never leave a logcat process behind
+                } finally { p?.destroy(); proc = null }      // never leave a logcat process behind
                 if (running) Thread.sleep(1000)
             }
         }, "hinge-reader").apply { isDaemon = true; start() }
     }
 
     fun stop() { running = false }
+
+    /** Stop now and close the logcat process at once (the helper calls this right before it exits: a process that
+     *  exits does not take its children with it). */
+    fun stopNow() { running = false; proc?.destroy(); proc = null }
 
     /** one new reading (ts = elapsedRealtimeNanos base); false if it is not newer than the last one */
     @Synchronized fun feed(a: Float, ts: Long): Boolean {
