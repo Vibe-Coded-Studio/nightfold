@@ -10,7 +10,7 @@ interface IHelper {
     void setTiming(int coverMs, int innerMs) = 6;   // opening play speed (the sliders)
     void startTraining(int opens) = 7;              // measure the next N cover-on opens
     String training() = 8;                          // "idle" | "k/N" | "done <coverMs>"
-    String grantApp(String pkg) = 9;                // shell grants the app's other permissions (one Shizuku allow = all)
+    String grantApp(String pkg) = 9;                // retired in 0.3.0 (returns "retired"); kept so codes stay stable
     void setFinish(int mode, int finMs) = 10;       // finish pass: 0 off, 1 A back, 2 B same way, 3 C middle out
     void setSoft(int blurTenths, int wobble) = 11;  // before the finish pass: blur 0-30 = 0.0-3.0, wobble 0-10
     boolean hingeFromApp(float angle, long tsNs) = 12; // public hinge sensor from the app; false = helper has its own feed

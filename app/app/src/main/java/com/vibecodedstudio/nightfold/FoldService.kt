@@ -15,7 +15,7 @@ import android.os.IBinder
  * at 80% opacity and redrew every frame forever. Without Shizuku the effect is off and a notification asks for it.
  */
 const val SHIZUKU_PKG = "moe.shizuku.privileged.api"
-const val BuildConfigVersion = 39   // bump when HelperService changes: Shizuku restarts the helper
+const val BuildConfigVersion = 40   // bump when HelperService changes: Shizuku restarts the helper
 
 class FoldService : Service() {
     companion object {
@@ -108,10 +108,7 @@ class FoldService : Service() {
     private val helperConn = object : android.content.ServiceConnection {
         override fun onServiceConnected(n: android.content.ComponentName?, b: IBinder?) {
             helper = IHelper.Stub.asInterface(b); helper?.setEnabled(true)
-            // one Shizuku allow covers everything: the shell helper grants the app's notification permission.
-            // Off the main thread: pm takes a moment.
-            val hp = helper
-            Thread { try { android.util.Log.d("FoldDuoT", "grants: ${hp?.grantApp(packageName)}") } catch (e: Throwable) {} }.start()
+            // notifications: the app asks with the normal Android prompt (0.3.0); the helper grants nothing
             applyPrefs()
             android.util.Log.d("FoldDuoT", "helper connected: ${helper?.status()}")
             // it takes a moment to set up its renderer and hinge feed, so ask shortly

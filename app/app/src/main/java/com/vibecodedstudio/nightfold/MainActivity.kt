@@ -27,6 +27,8 @@ private const val COVER_WAIT_MS = 60_000
 private const val TRAIN_OPENS = 8     // median of 8 is steady; odd ones are dropped and replaced (HelperService)
 
 /** Pick the effect, preview it with a slider, switch the effect on/off. */
+private const val REQ_NOTIF = 8
+
 class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var preview: FxView
@@ -411,7 +413,7 @@ class MainActivity : Activity() {
         val steps = listOf(
             "Get Shizuku" to "A free helper app. It lets the effect follow your hinge smoothly and draw above everything.",
             "Start Shizuku" to "Open Shizuku and tap Start (its first time it walks you through Wireless debugging). Then come back here.",
-            "Allow" to "One tap and the effect turns on.",
+            "Allow" to "Allow Shizuku (and notifications, if you like) and the effect turns on.",
         )
         stepViews.clear()
         steps.forEachIndexed { i, (title, body) ->
@@ -484,7 +486,15 @@ class MainActivity : Activity() {
     }
 
     private fun turnOn() {
-        getSharedPreferences("fx", Context.MODE_PRIVATE).edit().putBoolean("enabled", true).apply()
+        val sp = getSharedPreferences("fx", Context.MODE_PRIVATE)
+        sp.edit().putBoolean("enabled", true).apply()
+        // the normal Android prompt for notifications (0.3.0, Play prep: the helper no longer grants it through Shizuku).
+        // Asked once; the effect works without it (only the reminders and the status notification are hidden).
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED &&
+            !sp.getBoolean("notifAsked", false)) {
+            sp.edit().putBoolean("notifAsked", true).apply()
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIF); return   // continues below
+        }
         try {
             if (rikka.shizuku.Shizuku.pingBinder() &&
                 rikka.shizuku.Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -492,6 +502,10 @@ class MainActivity : Activity() {
             }
         } catch (_: Throwable) {}
         restartService(force = true)
+    }
+    override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, res: IntArray) {
+        super.onRequestPermissionsResult(code, perms, res)
+        if (code == REQ_NOTIF) turnOn()   // allowed or not, carry on to the Shizuku allow
     }
     private fun turnOff() {
         getSharedPreferences("fx", Context.MODE_PRIVATE).edit().putBoolean("enabled", false).apply()

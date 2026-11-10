@@ -365,19 +365,8 @@ class HelperService : IHelper.Stub {
         trainWant = opens.coerceIn(1, 30); trainResult = "0/$trainWant"
     }
     override fun training(): String = trainResult
-    override fun grantApp(pkg: String): String {
-        if (pkg != "com.vibecodedstudio.nightfold") return "refused"
-        val cmds = listOf(
-            "pm grant $pkg android.permission.POST_NOTIFICATIONS",
-        )
-        return cmds.joinToString("; ") { c ->
-            try {
-                val p = ProcessBuilder("sh", "-c", c).redirectErrorStream(true).start()
-                val out = p.inputStream.bufferedReader().readText().trim()
-                "${c.substringBefore(" $pkg")}=${p.waitFor()}${if (out.isNotEmpty()) " ($out)" else ""}"
-            } catch (e: Throwable) { "$c failed: $e" }
-        }.also { Log.d(TAG, "grantApp: $it") }
-    }
+    // retired in 0.3.0 (Play prep): the app asks for its permissions itself; kept so the AIDL codes stay stable
+    override fun grantApp(pkg: String): String = "retired"
     override fun setFinish(mode: Int, ms: Int) { finMode = mode.coerceIn(0, 3); finMs = ms.coerceIn(200, 3000) }
     // ---- non-Samsung foldables: the app forwards Android's public hinge sensor ----
     override fun hingeFromApp(angle: Float, tsNs: Long): Boolean {
